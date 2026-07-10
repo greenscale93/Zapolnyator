@@ -9,10 +9,9 @@ class OrchestratorClient:
     def __init__(self):
         self.base_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
         self.max_retries = 5
-        self.retry_delay = 2  # секунды
+        self.retry_delay = 2
 
     async def _request_with_retry(self, method: str, url: str, **kwargs):
-        """Выполняет HTTP-запрос с повторными попытками при ошибках соединения."""
         for attempt in range(self.max_retries):
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -52,24 +51,15 @@ class OrchestratorClient:
         url = f"{self.base_url}/api/v1/task/{task_id}/answer"
         payload = {"answer": answer}
         return await self._request_with_retry("POST", url, json=payload)
-    
+
     async def approve_llm(self, task_id: str):
         url = f"{self.base_url}/api/v1/task/{task_id}/approve"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url)
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request_with_retry("POST", url)
 
     async def cancel_llm(self, task_id: str):
         url = f"{self.base_url}/api/v1/task/{task_id}/cancel"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url)
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request_with_retry("POST", url)
 
     async def stop_task(self, task_id: str):
         url = f"{self.base_url}/api/v1/task/{task_id}/stop"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url)
-            resp.raise_for_status()
-            return resp.json()
+        return await self._request_with_retry("POST", url)
