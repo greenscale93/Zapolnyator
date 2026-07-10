@@ -14,6 +14,7 @@ services:
       - ORCHESTRATOR_URL=http://orchestrator:8000
       - REDIS_URL=redis://redis:6379
       - TEMP_DIR=/app/temp
+      - AUTO_TEST=true
     volumes:
       - ./temp:/app/temp
     ports:

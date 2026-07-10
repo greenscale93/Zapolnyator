@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import json
 from aiogram import Router, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -9,17 +10,56 @@ from aiogram.types import Message, FSInputFile
 from aiofiles import open as aio_open
 from src.client import OrchestratorClient
 
-AUTO_TEST = os.getenv("AUTO_TEST", "false").lower() == "true"
-
 router = Router()
 logger = logging.getLogger(__name__)
+
+# === НАСТРОЙКИ АВТОТЕСТА ===
+AUTO_TEST = os.getenv("AUTO_TEST", "false").lower() == "true"
+TEMP_DIR = os.getenv("TEMP_DIR", "/app/temp")
+LAST_FILES_PATH = os.path.join(TEMP_DIR, "last_files.json")
 
 class WaitingState(StatesGroup):
     answer = State()
 
+def _save_last_files(excel_path: str, data_path: str):
+    """Сохраняет пути к последним файлам в JSON"""
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        with open(LAST_FILES_PATH, 'w') as f:
+            json.dump({"excel": excel_path, "data": data_path}, f)
+        logger.info(f"Saved last files: {excel_path}, {data_path}")
+    except Exception as e:
+        logger.warning(f"Could not save last files: {e}")
+
+def _get_last_files():
+    """Возвращает последние сохранённые пути к файлам"""
+    try:
+        if os.path.exists(LAST_FILES_PATH):
+            with open(LAST_FILES_PATH, 'r') as f:
+                data = json.load(f)
+            return data.get("excel"), data.get("data")
+    except Exception as e:
+        logger.warning(f"Could not read last files: {e}")
+    return None, None
+
 @router.message(Command("start", "help"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    
+    if AUTO_TEST:
+        # Проверяем, есть ли сохранённые файлы
+        excel_path, data_path = _get_last_files()
+        if excel_path and data_path and os.path.exists(excel_path) and os.path.exists(data_path):
+            await message.answer("🔄 Автотест: использую последние файлы...")
+            # Сохраняем пути в состояние
+            await state.update_data(excel_path=excel_path, data_path=data_path)
+            # Запускаем обработку
+            await start_processing(message, state, excel_path, data_path)
+            return
+        else:
+            await message.answer("⚠️ Автотест включён, но сохранённые файлы не найдены. Отправьте файлы вручную.")
+    
+    # Обычный режим
     await message.answer(
         "Привет! Отправьте мне два файла:\n"
         "1. Шаблон отчёта (Excel) – например, 'ДКП 10 - май 2026.xlsx'\n"
@@ -31,21 +71,6 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
-
-@router.message(Command("stop"))
-async def cmd_stop(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для остановки.")
-        return
-    client = OrchestratorClient()
-    try:
-        await client.stop_task(task_id)
-        await message.answer("⏹️ Задача остановлена.")
-        await state.clear()
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
 
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
@@ -66,6 +91,7 @@ async def handle_document(message: Message, state: FSMContext):
         await start_processing(message, state, excel_path, data_path)
         return
 
+    # Определяем тип файла по имени
     if "ВыгрузкаДляExcel" in file_name or "выгрузкадляexcel" in file_name.lower():
         if data_path:
             await message.answer("Файл с данными уже загружен. Если хотите заменить, отправьте новый.")
@@ -88,15 +114,20 @@ async def handle_document(message: Message, state: FSMContext):
         if not data_path:
             await message.answer("Ожидаю файл с данными (содержит 'ВыгрузкаДляExcel').")
 
+    # Проверяем, загружены ли оба файла
     data = await state.get_data()
     if data.get("excel_path") and data.get("data_path"):
         await message.answer("✅ Оба файла успешно загружены на сервер!")
         await start_processing(message, state, data["excel_path"], data["data_path"])
 
 async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
+    """Запускает обработку через Orchestrator."""
+    # Сохраняем последние файлы
+    _save_last_files(excel_path, data_path)
+    
     client = OrchestratorClient()
     try:
-        # Извлекаем месяц и год из имени шаблона (упрощённо)
+        # Извлекаем месяц и год из имени шаблона (пока захардкожено)
         month = "Май"
         year = 2026
         task_id = await client.create_task(
@@ -178,7 +209,7 @@ async def handle_answer(message: Message, state: FSMContext):
     asyncio.create_task(poll_task_status(message, state, task_id))
 
 async def save_document(doc: types.Document, prefix: str) -> str:
-    temp_dir = os.getenv("TEMP_DIR", "/app/temp")
+    temp_dir = TEMP_DIR
     os.makedirs(temp_dir, exist_ok=True)
     file_id = doc.file_id
     file_name = f"{prefix}_{file_id}.{doc.file_name.split('.')[-1]}"
