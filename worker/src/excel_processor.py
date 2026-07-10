@@ -61,18 +61,18 @@ async def write_excel_data(template_path: str, sheets_data: dict, password: str 
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456") -> dict:
     """
     Применяет маппинг к указанному листу.
-    mapping должен содержать:
-        - source_columns: dict {target_col: source_col_or_expression}
-        - append_to_end: bool (добавлять в конец)
+    mapping содержит:
+        - filters: dict {col_name: value} — строки должны соответствовать всем фильтрам
+        - exclude_filters: dict {col_name: [values]} — строки, где col_name in values, исключаются
+        - column_mapping: dict {col_number: source_col_or_expression} — куда писать
+        - append_to_end: bool
     """
     try:
-        # 1. Копируем шаблон
         output_dir = os.path.dirname(template_path)
         output_filename = f"ДКП_10_-_{month}_{year}.xlsx"
         output_path = os.path.join(output_dir, output_filename)
         shutil.copy2(template_path, output_path)
 
-        # 2. Расшифровка, если есть пароль
         if password:
             try:
                 with open(output_path, 'rb') as f:
@@ -86,60 +86,55 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
             except Exception as e:
                 logger.warning(f"Decrypt failed: {e}")
 
-        # 3. Читаем источник (Excel) в DataFrame
+        # Читаем источник
         df_source = pd.read_excel(source_path, header=0)
 
-        # 4. Открываем шаблон для записи
+        # Применяем фильтры
+        filters = mapping.get("filters", {})
+        for col, value in filters.items():
+            if col in df_source.columns:
+                df_source = df_source[df_source[col] == value]
+
+        # Исключаем
+        exclude_filters = mapping.get("exclude_filters", {})
+        for col, values in exclude_filters.items():
+            if col in df_source.columns:
+                df_source = df_source[~df_source[col].isin(values)]
+
+        # Открываем шаблон
         wb = load_workbook(output_path)
         if sheet_name not in wb.sheetnames:
-            return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
+            return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found"}
         ws = wb[sheet_name]
 
-        # 5. Подготавливаем данные для вставки
-        source_cols = mapping.get("source_columns", {})
+        # Получаем маппинг колонок {номер_колонки: источник}
+        col_mapping = mapping.get("column_mapping", {})
         append = mapping.get("append_to_end", True)
 
-        target_cols = list(source_cols.keys())
-        col_mapping = {}
-        for target_col, source_expr in source_cols.items():
-            col_mapping[target_col] = source_expr
-
-        # 6. Извлекаем данные из источника
-        rows_to_insert = []
-        for idx, row in df_source.iterrows():
-            new_row = {}
-            for target_col, source_expr in col_mapping.items():
-                if source_expr == "{month} {year}":
-                    new_row[target_col] = f"{month} {year}"
-                else:
-                    if source_expr in df_source.columns:
-                        new_row[target_col] = row[source_expr]
-                    else:
-                        new_row[target_col] = None
-            rows_to_insert.append(new_row)
-
-        if not rows_to_insert:
-            return {"status": "error", "error_message": "No data to insert"}
-
-        # 7. Вставляем строки в лист (без таблиц и автофильтра)
+        # Определяем, куда вставлять
         if append:
             max_row = ws.max_row
             start_row = max_row + 1
         else:
-            # Если append_to_end = false, очищаем лист, оставляя только заголовки
             if ws.max_row > 1:
                 ws.delete_rows(2, ws.max_row - 1)
             start_row = 2
 
-        headers = list(rows_to_insert[0].keys())
-        for i, row_dict in enumerate(rows_to_insert, start=start_row):
-            for j, header in enumerate(headers, start=1):
-                cell = ws.cell(row=i, column=j)
-                cell.value = row_dict.get(header)
+        # Проходим по строкам источника и пишем
+        for row_idx, source_row in df_source.iterrows():
+            for col_num_str, source_expr in col_mapping.items():
+                col_num = int(col_num_str)
+                if source_expr == "{month} {year}":
+                    value = f"{month} {year}"
+                elif source_expr in df_source.columns:
+                    value = source_row[source_expr]
+                else:
+                    # Если source_expr — константа
+                    value = source_expr
+                cell = ws.cell(row=start_row + row_idx, column=col_num)
+                cell.value = value
 
-        # 8. Сохраняем книгу (НЕ трогаем таблицы и автофильтр)
         wb.save(output_path)
-
         return {"status": "success", "output_path": output_path}
     except Exception as e:
         logger.exception("apply_sheet_mapping error")
