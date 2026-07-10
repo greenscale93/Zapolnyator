@@ -58,8 +58,8 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
     mapping может содержать:
         - source_columns: dict {target_col_index: source_col_name_or_expression}  (индексы колонок, начиная с 1)
         - append_to_end: bool (добавлять в конец)
-        - filters: dict {source_col: value} - фильтровать строки по точному совпадению
-        - exclude_filters: dict {source_col: value} - исключить строки где value совпадает
+        - filters: dict {source_col: value} - фильтровать строки по точному совпадению (строковое сравнение)
+        - exclude_filters: dict {source_col: value} - исключить строки где value совпадает (строковое сравнение)
         - header_row: int (номер строки с заголовками в шаблоне, по умолчанию 2)
     """
     try:
@@ -87,21 +87,22 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)  # заголовки в первой строке источника
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # 4. Применяем фильтры
+        # 4. Применяем фильтры (с приведением к строке)
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
         if filters:
             for col, val in filters.items():
                 if col in df_source.columns:
-                    df_source = df_source[df_source[col] == val]
+                    # Приводим к строке для безопасного сравнения
+                    df_source = df_source[df_source[col].astype(str) == str(val)]
                     logger.info(f"Applied filter {col} = {val}, rows left: {len(df_source)}")
                 else:
                     logger.warning(f"Filter column '{col}' not found in source")
         if exclude_filters:
             for col, val in exclude_filters.items():
                 if col in df_source.columns:
-                    df_source = df_source[df_source[col] != val]
+                    df_source = df_source[df_source[col].astype(str) != str(val)]
                     logger.info(f"Applied exclude filter {col} != {val}, rows left: {len(df_source)}")
                 else:
                     logger.warning(f"Exclude column '{col}' not found in source")
