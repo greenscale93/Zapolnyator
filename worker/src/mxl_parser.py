@@ -1,6 +1,9 @@
-import re
+import csv
+import os
 import logging
-from typing import List, Dict, Any
+import chardet
+import json
+from io import StringIO
 
 logger = logging.getLogger(__name__)
 
@@ -119,4 +122,73 @@ async def parse_mxl(file_path: str) -> dict:
         }
     except Exception as e:
         logger.exception("MXL parsing error")
+        return {"status": "error", "error_message": str(e)}
+    
+async def convert_mxl_to_csv(file_path: str) -> dict:
+    """
+    Парсит MXL и возвращает CSV-строку, а также сохраняет CSV-файл рядом с исходным.
+    """
+    if not os.path.exists(file_path):
+        return {"status": "error", "error_message": f"File not found: {file_path}"}
+    
+    try:
+        # Определяем кодировку
+        with open(file_path, 'rb') as f:
+            raw_data = f.read(10000)
+            encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
+        logger.info(f"Detected encoding: {encoding}")
+        
+        # Читаем образец для разделителя
+        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+            sample = f.read(4096)
+        
+        possible_delimiters = ['\t', ';', ',', '|']
+        delimiter = None
+        for delim in possible_delimiters:
+            if delim in sample:
+                lines = sample.splitlines()
+                if len(lines) > 1:
+                    counts = [line.count(delim) for line in lines[:5]]
+                    if all(c > 0 for c in counts) and len(set(counts)) <= 1:
+                        delimiter = delim
+                        break
+        if delimiter is None:
+            delim_counts = {d: sample.count(d) for d in possible_delimiters}
+            if max(delim_counts.values()) > 0:
+                delimiter = max(delim_counts, key=delim_counts.get)
+            else:
+                return {"status": "error", "error_message": "Cannot detect delimiter in MXL file"}
+        
+        logger.info(f"Detected delimiter: {repr(delimiter)}")
+        
+        # Читаем все данные
+        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            data = list(reader)
+            columns = reader.fieldnames if reader.fieldnames else []
+        
+        # Генерируем CSV-строку с тем же разделителем (табуляция или запятая?)
+        # Для лучшей совместимости используем запятую
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns, delimiter=',')
+        writer.writeheader()
+        writer.writerows(data)
+        csv_data = output.getvalue()
+        
+        # Сохраняем CSV-файл
+        csv_path = file_path + ".csv"
+        with open(csv_path, 'w', encoding='utf-8') as f:
+            f.write(csv_data)
+        
+        return {
+            "status": "success",
+            "result": {
+                "csv_data": csv_data,
+                "csv_path": csv_path,
+                "rows": len(data),
+                "columns": columns
+            }
+        }
+    except Exception as e:
+        logger.exception("MXL to CSV conversion error")
         return {"status": "error", "error_message": str(e)}

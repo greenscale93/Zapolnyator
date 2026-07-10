@@ -33,7 +33,6 @@ class OrchestratorAgent:
             return "Инструкция не загружена."
 
     async def _send_telegram_message(self, user_id: int, text: str, file_path: str = None):
-        """Отправляет сообщение пользователю через Telegram API, опционально с файлом."""
         if not self.bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN not set, cannot send notification")
             return
@@ -60,7 +59,7 @@ class OrchestratorAgent:
     async def _save_debug_data(self, data: dict, prefix: str) -> str:
         fd, path = tempfile.mkstemp(suffix='.txt', prefix=f"{prefix}_")
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(data, indent=2, ensure_ascii=False))
+            f.write(json.dumps(data, indent=2, ensure_ascii=False, default=str))
         return path
 
     async def run_agent_cycle(self, task_id: str):
@@ -89,80 +88,89 @@ class OrchestratorAgent:
             f"📁 Excel: {excel_path}"
         )
 
-        # 1. Получаем структуру MXL
-        await self._send_telegram_message(user_id, "🔍 Анализирую структуру MXL-файла...")
-        structure_result = await self.worker_client.call_tool("get_mxl_structure", {"file_path": mxl_path})
-        if structure_result.get("status") == "error":
-            await self._set_error(task_id, structure_result.get("error_message"))
-            await self._send_telegram_message(user_id, f"❌ Ошибка при получении структуры MXL: {structure_result.get('error_message')}")
+        # 1. Конвертируем MXL в CSV
+        await self._send_telegram_message(user_id, "🔍 Конвертирую MXL в CSV...")
+        convert_result = await self.worker_client.call_tool("convert_mxl_to_csv", {"file_path": mxl_path})
+        if convert_result.get("status") == "error":
+            await self._set_error(task_id, convert_result.get("error_message"))
+            await self._send_telegram_message(user_id, f"❌ Ошибка конвертации MXL: {convert_result.get('error_message')}")
             return
-        columns = structure_result["result"]["columns"]
-        samples = structure_result["result"]["samples"]
-        total_rows = structure_result["result"]["total_rows"]
+        csv_path = convert_result["result"]["csv_path"]
+        csv_data = convert_result["result"]["csv_data"]
+        rows = convert_result["result"]["rows"]
+        columns = convert_result["result"]["columns"]
+        size = convert_result["result"]["size"]
         await self._send_telegram_message(
             user_id,
-            f"✅ Обнаружено {total_rows} строк, колонки: {', '.join(columns[:10])}{'...' if len(columns) > 10 else ''}"
+            f"✅ MXL сконвертирован в CSV: {rows} строк, размер {size} байт.\n"
+            f"📁 CSV сохранён: {csv_path}"
         )
 
-        # 2. Формируем системный промпт с полной инструкцией
+        # Если CSV большой, отправляем пользователю и передаём в LLM только первые строки
+        csv_for_llm = csv_data
+        if size > 500000:  # 500 KB
+            # Сохраняем полный CSV в файл и отправляем пользователю
+            debug_file = await self._save_debug_data({"csv_data": csv_data}, "full_csv")
+            await self._send_telegram_message(
+                user_id,
+                f"📦 CSV файл большой ({size} байт). Полный файл сохранён и отправлен.",
+                file_path=debug_file
+            )
+            # Оставляем только первые 200 строк для LLM
+            lines = csv_data.splitlines()
+            if len(lines) > 200:
+                csv_for_llm = "\n".join(lines[:200]) + f"\n... (всего {len(lines)} строк, полный файл отправлен пользователю)"
+            else:
+                csv_for_llm = csv_data
+
+        # 2. Формируем системный промпт с инструкцией и CSV-данными
         system_prompt = f"""
-Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки.
+Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки (сконвертированной в CSV).
 Вот полная инструкция, которой ты должен следовать:
 
 {self.instruction}
 
 ВАЖНО: файлы уже загружены на сервер и доступны по следующим путям:
-- MXL-файл: {mxl_path}
+- MXL-файл (оригинал): {mxl_path}
+- CSV-файл (сконвертированный): {csv_path}
 - Excel-шаблон: {excel_path}
 Месяц: {month}, год: {year}.
-НЕ ЗАПРАШИВАЙ пути к файлам — они уже известны.
 
-Сейчас у тебя есть MXL-файл со следующими колонками:
-{columns}
+Содержимое CSV-файла (первые строки):
+{csv_for_llm}
 
-Общее количество строк: {total_rows}. 
+Всего строк в CSV: {rows}, колонки: {columns}.
 
 Ты можешь использовать следующие инструменты (вызывай их через функцию call_tool):
-- get_mxl_structure — уже вызван, структура у тебя есть.
-- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}). file_path = {mxl_path}. Если результат слишком большой (более 3 МБ), ты получишь урезанный ответ и файл будет отправлен пользователю.
-- write_excel(template_path, sheets_data, password, output_path) — записывает данные. template_path = {excel_path}.
+- filter_mxl_data(file_path, filters) — фильтрует данные из MXL-файла (оригинал). file_path = {mxl_path}. 
+  Используй этот инструмент, если тебе нужны полные данные для конкретного типа записей.
+- write_excel(template_path, sheets_data, password, output_path) — записывает данные в Excel. template_path = {excel_path}.
 - read_excel_structure(file_path) — читает структуру Excel.
 
-Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context), но только если действительно не хватает информации.
+Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context), если не хватает информации.
 
-Порядок действий (строго следуй инструкции):
-1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, ПодразделениеКонтрагентДляОтчета, СуммаБезНДС, СуммаСНДС, СтавкаНДС, Комментарий, НомерК7, Сотрудник, Оклад, Премия, ВидНачисленияЗП, ТипОборота, ВидОборота, Направление, ВГО.
-2. Примени фильтры: только Сценарий = "ФАКТ", исключи Подразделение = "ГКП 10.6 (Емельянова)", исключи ВГО.
-   Для этого вызывай filter_mxl_data поочерёдно для каждого типа записи:
-   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Реализация" }})
-   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Оплата" }})
-   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Взаиморасчет" }})
-   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "НачислениеЗарплаты" }})
-   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "ФактическийФОТ" }})
-   Так каждый ответ будет содержать только строки одного типа.
-3. Для Взаиморасчетов обработай согласно инструкции:
-   - внутренние отделы (ПодразделениеКонтрагентДляОтчета содержит "руб.") — схлопни дубли (оставь одну строку с ТипОборота="БДР").
-   - другие офисы (др. офис, Ташкент, Краснодар, Павелецкая, NFP) — раздели на БДР и БДДС, добавь название офиса в комментарий.
-4. Для НачислениеЗарплаты сгруппируй по сотруднику: суммируй Оклад (ВидНачисленияЗП="Оплата труда") и Премию (ВидНачисленияЗП="Премия"), административные расходы игнорируй.
-5. Для ФактическийФОТ суммируй Сумму, исключи премию Сорокина Ильи Вячеславовича.
-6. Сформируй структуру для записи в Excel: словарь, где ключ — имя листа (Реализация, ДС, ФОТ, Взаиморасчеты), значение — список строк (каждая строка — dict с колонками).
-   Колонки для каждого листа определи согласно инструкции.
-   Для листа Реализация: Подразделение, Сценарий, Период (текст "Месяц Год"), Контрагент, Проект, Сумма с НДС 20%, Сумма без НДС, Ставка НДС (с преобразованием), Комментарий (Этап), № документа.
-   Для листа ДС: аналогично, но Комментарий — из колонки Комментарий.
-   Для листа ФОТ: Подразделение, Сотрудник, ФОТ (сумма окладов), Премия (сумма премий), Комментарий (объединённый).
-   Для листа Взаиморасчеты: Подразделение, Сценарий, Период, Отдел (результат обработки), Контрагент, Проект, Направление (преобразованное), Сумма без НДС, Комментарий.
-8. Вызови write_excel для записи.
-9. После записи вычисли итоговые показатели (по формулам из инструкции) и верни их в ответе.
+Порядок действий:
+1. Проанализируй CSV-данные (уже в промпте) и определи соответствие колонок.
+2. Если нужно полные данные для каких-то типов, используй filter_mxl_data с фильтрами.
+3. Примени бизнес-логику согласно инструкции:
+   - Фильтры: только ФАКТ, исключить ГКП 10.6, исключить ВГО.
+   - Группировка по типам записей.
+   - Обработка взаиморасчетов (схлопывание, разделение по БДР/БДДС).
+   - Группировка ФОТ по сотрудникам.
+   - Расчёт фактического ФОТ.
+4. Сформируй структуру для записи в Excel.
+5. Вызови write_excel.
+6. Вычисли итоговые показатели и верни их в JSON-ответе.
 
-Все данные уже на сервере, не запрашивай пути. Используй пошаговую фильтрацию по типам записей.
+Не запрашивай пути к файлам, они уже известны. Используй предоставленные данные.
 """
 
         # 3. Сохраняем историю
         history = [{"role": "system", "content": system_prompt}]
-        init_message = f"Я проанализирую MXL-файл и подготовлю данные для Excel. Месяц: {month}, год: {year}."
+        init_message = f"Я проанализирую CSV-данные и подготовлю Excel. Месяц: {month}, год: {year}."
         history.append({"role": "assistant", "content": init_message})
 
-        # 4. Цикл вызовов (максимум 15 итераций)
+        # 4. Цикл вызовов
         max_iterations = 15
         iteration = 0
         total_tokens = 0
@@ -192,19 +200,18 @@ class OrchestratorAgent:
                         }
                     }
                 ]
-                # Проверяем размер истории перед отправкой
-                history_size = len(json.dumps(history, ensure_ascii=False))
-                if history_size > 4000000:  # ~4 MB
+                # Проверка размера истории перед отправкой
+                history_size = len(json.dumps(history, ensure_ascii=False, default=str))
+                if history_size > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
                     await self._send_telegram_message(
                         user_id,
                         f"⚠️ Размер истории ({history_size} символов) превышает лимит. Сохранено в файл.",
                         file_path=debug_file
                     )
-                    # Обрезаем историю
                     if len(history) > 4:
                         history = [history[0]] + history[-3:]
-                    logger.warning(f"History truncated from {len(history)} to 4 messages due to size")
+                    logger.warning(f"History truncated to 4 messages due to size")
 
                 response = await self.client.chat.completions.create(
                     model="deepseek-chat",
@@ -249,15 +256,13 @@ class OrchestratorAgent:
                                     await self._send_telegram_message(user_id, f"✅ Инструмент {tool_name} выполнен успешно.")
                                 # Проверяем размер результата
                                 result_str = json.dumps(result, ensure_ascii=False, default=str)
-                                if len(result_str) > 3000000:  # 3 MB
-                                    # Сохраняем в файл и отправляем пользователю
+                                if len(result_str) > 3000000:
                                     debug_file = await self._save_debug_data(result, f"{tool_name}_result")
                                     await self._send_telegram_message(
                                         user_id,
                                         f"📦 Результат {tool_name} слишком большой ({len(result_str)} символов). Сохранён в файл.",
                                         file_path=debug_file
                                     )
-                                    # Сокращаем результат для LLM
                                     if "filtered_data" in result.get("result", {}):
                                         data = result["result"]["filtered_data"]
                                         truncated = data[:100] if isinstance(data, list) else data
@@ -298,7 +303,6 @@ class OrchestratorAgent:
                                 await self._send_telegram_message(user_id, f"❌ Ошибка: {result.get('error_message', 'Неизвестная ошибка')}")
                                 return
                         except json.JSONDecodeError:
-                            # Если не JSON, считаем это сообщением для пользователя
                             await self._send_telegram_message(user_id, f"🤖 {content[:500]}...")
                             await self.session_manager.update_session(task_id, {
                                 "status": "waiting_question",

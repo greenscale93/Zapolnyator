@@ -1,5 +1,8 @@
 import logging
 import os
+import json
+import csv
+from io import StringIO
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional, List
@@ -29,6 +32,34 @@ async def call_tool(request: ToolRequest):
             if result.get("status") == "error":
                 return ToolResponse(status="error", error_message=result.get("error_message"))
             return ToolResponse(status="success", result=result.get("result"))
+        
+        elif request.tool == "convert_mxl_to_csv":
+            file_path = request.arguments["file_path"]
+            parsed = await parse_mxl(file_path)
+            if parsed.get("status") == "error":
+                return ToolResponse(status="error", error_message=parsed.get("error_message"))
+            data = parsed["result"]["data"]
+            columns = parsed["result"]["columns"]
+            if not data:
+                return ToolResponse(status="error", error_message="No data in MXL")
+            # Генерируем CSV
+            output = StringIO()
+            writer = csv.DictWriter(output, fieldnames=columns, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+            writer.writeheader()
+            writer.writerows(data)
+            csv_data = output.getvalue()
+            # Сохраняем CSV рядом с исходным файлом
+            csv_path = file_path + ".csv"
+            with open(csv_path, 'w', encoding='utf-8-sig') as f:
+                f.write(csv_data)
+            logger.info(f"Converted MXL to CSV: {csv_path}, rows={len(data)}, size={len(csv_data)}")
+            return ToolResponse(status="success", result={
+                "csv_path": csv_path,
+                "csv_data": csv_data,  # можно передать, но если большой, лучше не передавать
+                "rows": len(data),
+                "columns": columns,
+                "size": len(csv_data)
+            })
         
         elif request.tool == "get_mxl_structure":
             file_path = request.arguments["file_path"]
@@ -71,7 +102,7 @@ async def call_tool(request: ToolRequest):
         
         elif request.tool == "write_excel":
             template_path = request.arguments["template_path"]
-            sheets_data = request.arguments["sheets_data"]  # dict {sheet_name: list of dict}
+            sheets_data = request.arguments["sheets_data"]
             password = request.arguments.get("password", "987456")
             output_path = request.arguments.get("output_path")
             result = await write_excel_data(template_path, sheets_data, password, output_path)
