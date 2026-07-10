@@ -9,7 +9,10 @@ import msoffcrypto
 
 logger = logging.getLogger(__name__)
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
 async def read_excel_structure(file_path: str) -> dict:
+    """Возвращает список листов и их колонки (из указанной строки заголовков)"""
     try:
         if os.path.exists(file_path):
             try:
@@ -35,11 +38,14 @@ async def read_excel_structure(file_path: str) -> dict:
         sheets = {}
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            headers = [cell.value for cell in ws[1] if cell.value]
+            # Предполагаем, что заголовки во второй строке (индекс 2)
+            header_row = 2
+            headers = [cell.value for cell in ws[header_row] if cell.value]
             sheets[sheet_name] = {
                 "headers": headers,
                 "rows_count": ws.max_row,
-                "max_column": ws.max_column
+                "max_column": ws.max_column,
+                "header_row": header_row
             }
         return {"status": "success", "result": {"sheets": sheets}}
     except Exception as e:
@@ -50,10 +56,11 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
     """
     Применяет маппинг к указанному листу.
     mapping может содержать:
-        - source_columns: dict {target_col: source_col_or_expression}
+        - source_columns: dict {target_col_index: source_col_name_or_expression}  (индексы колонок, начиная с 1)
         - append_to_end: bool (добавлять в конец)
         - filters: dict {source_col: value} - фильтровать строки по точному совпадению
         - exclude_filters: dict {source_col: value} - исключить строки где value совпадает
+        - header_row: int (номер строки с заголовками в шаблоне, по умолчанию 2)
     """
     try:
         # 1. Копируем шаблон
@@ -77,7 +84,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 logger.warning(f"Decrypt failed: {e}")
 
         # 3. Читаем источник (Excel) в DataFrame
-        df_source = pd.read_excel(source_path, header=0)
+        df_source = pd.read_excel(source_path, header=0)  # заголовки в первой строке источника
         logger.info(f"Source rows before filters: {len(df_source)}")
 
         # 4. Применяем фильтры
@@ -108,49 +115,62 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
             return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
         ws = wb[sheet_name]
 
-        # 6. Подготавливаем данные для вставки
+        # 6. Определяем номер строки с заголовками в шаблоне (по умолчанию 2)
+        header_row = mapping.get("header_row", 2)
+        # Проверяем, есть ли вообще данные в этой строке
+        if ws.cell(row=header_row, column=1).value is None:
+            # Если пусто, возможно заголовки в первой строке — пробуем
+            header_row = 1
+
+        # 7. Подготавливаем данные для вставки
         source_cols = mapping.get("source_columns", {})
         append = mapping.get("append_to_end", True)
 
-        col_mapping = {}
-        for target_col, source_expr in source_cols.items():
-            col_mapping[target_col] = source_expr
-
+        # source_cols: {target_col_index: source_col_name_or_expression}
+        # target_col_index — номер колонки в шаблоне (начиная с 1)
         rows_to_insert = []
         for idx, row in df_source.iterrows():
             new_row = {}
-            for target_col, source_expr in col_mapping.items():
+            for target_col_idx, source_expr in source_cols.items():
                 if source_expr == "{month} {year}":
-                    new_row[target_col] = f"{month} {year}"
+                    new_row[target_col_idx] = f"{month} {year}"
                 else:
                     if source_expr in df_source.columns:
-                        new_row[target_col] = row[source_expr]
+                        new_row[target_col_idx] = row[source_expr]
                     else:
-                        new_row[target_col] = None
+                        new_row[target_col_idx] = None
             rows_to_insert.append(new_row)
 
         if not rows_to_insert:
             return {"status": "error", "error_message": "No data to insert"}
 
-        # 7. Вставляем строки
+        # 8. Вставляем строки (начиная с header_row + 1, если append_to_end=True)
         if append:
+            # Находим последнюю заполненную строку после заголовков
             max_row = ws.max_row
+            # Если есть пустые строки между данными, ищем последнюю непустую
             start_row = max_row + 1
+            while start_row > header_row and ws.cell(row=start_row-1, column=1).value is None:
+                start_row -= 1
+            # Если start_row <= header_row, значит данных нет, начинаем с header_row+1
+            if start_row <= header_row:
+                start_row = header_row + 1
         else:
-            if ws.max_row > 1:
-                ws.delete_rows(2, ws.max_row - 1)
-            start_row = 2
+            # Если append=false, очищаем всё после заголовков
+            if ws.max_row > header_row:
+                ws.delete_rows(header_row + 1, ws.max_row - header_row)
+            start_row = header_row + 1
 
-        headers = list(rows_to_insert[0].keys())
+        # Записываем данные
         for i, row_dict in enumerate(rows_to_insert, start=start_row):
-            for j, header in enumerate(headers, start=1):
-                cell = ws.cell(row=i, column=j)
-                cell.value = row_dict.get(header)
+            for col_idx, value in row_dict.items():
+                if value is not None:
+                    ws.cell(row=i, column=col_idx).value = value
 
-        # 8. Сохраняем книгу
+        # 9. Сохраняем книгу (НЕ трогаем таблицы и автофильтр)
         wb.save(output_path)
 
-        return {"status": "success", "output_path": output_path}
+        return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
     except Exception as e:
         logger.exception("apply_sheet_mapping error")
         return {"status": "error", "error_message": str(e)}

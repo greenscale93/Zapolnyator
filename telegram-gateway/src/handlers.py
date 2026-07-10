@@ -9,6 +9,8 @@ from aiogram.types import Message, FSInputFile
 from aiofiles import open as aio_open
 from src.client import OrchestratorClient
 
+AUTO_TEST = os.getenv("AUTO_TEST", "false").lower() == "true"
+
 router = Router()
 logger = logging.getLogger(__name__)
 
