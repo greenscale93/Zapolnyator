@@ -19,22 +19,24 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-            # Настраиваем SSH-ключ для git clone
             mkdir -p ~/.ssh
             echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
             chmod 600 ~/.ssh/id_rsa
             ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
 
-            # Клонируем или обновляем репозиторий через SSH
             cd /home/${{ secrets.VPS_USER }}/Zapolnyator || git clone git@github.com:${{ github.repository }}.git /home/${{ secrets.VPS_USER }}/Zapolnyator
             cd /home/${{ secrets.VPS_USER }}/Zapolnyator
-            git fetch --all
+            git fetch origin
             git reset --hard origin/main
 
             # Создаём .env
             echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" > .env
+            echo "DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}" >> .env
             echo "TEMP_DIR=/app/temp" >> .env
+            echo "ORCHESTRATOR_URL=http://orchestrator:8000" >> .env
+            echo "WORKER_URL=http://worker:8000" >> .env
+            echo "REDIS_URL=redis://redis:6379" >> .env
 
-            mkdir -p temp
+            mkdir -p temp data
             docker compose down
             docker compose up -d --build

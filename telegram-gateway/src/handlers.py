@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from aiofiles import open as aio_open
+from src.client import OrchestratorClient
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -40,7 +41,16 @@ async def handle_document(message: Message, state: FSMContext):
     # Если оба уже есть – не даём загрузить ещё
     if excel_path and mxl_path:
         await message.answer("Вы уже загрузили оба файла. Начинаю обработку...")
-        # Здесь в будущем будет вызов Orchestrator
+         # Вызываем Orchestrator
+        client = OrchestratorClient()
+        task_id = await client.create_task(
+            user_id=message.from_user.id,
+            excel_path=excel_path,
+            mxl_path=mxl_path,
+            month="Май",  # пока захардкодим, позже можно спросить у пользователя
+            year=2026
+        )
+        await message.answer(f"Задача создана (ID: {task_id}). Ожидайте обработку...")
         await state.clear()
         return
 
