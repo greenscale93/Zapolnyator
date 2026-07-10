@@ -1,8 +1,7 @@
 import logging
 import os
 import json
-import re
-from typing import List, Dict, Optional, Any
+import asyncio
 from openai import AsyncOpenAI
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
@@ -19,304 +18,219 @@ class OrchestratorAgent:
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             base_url="https://api.deepseek.com/v1"
         )
+        self.instruction = self._load_instruction()
+        logger.info("OrchestratorAgent initialized")
+
+    def _load_instruction(self) -> str:
+        # Пытаемся загрузить из файла, если нет – используем встроенную
+        try:
+            with open("/app/INSTRUCTION.md", "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Cannot load instruction: {e}")
+            return "Инструкция не загружена. Пожалуйста, следуйте стандартной бизнес-логике."
 
     async def run_agent_cycle(self, task_id: str):
+        logger.info(f"Starting agent cycle for task {task_id}")
         state = await self.session_manager.get_session(task_id)
         if not state:
+            logger.error(f"Task {task_id} not found")
             return
         
-        rules = await self.memory_store.load_all_rules()
-        user_mapping = state.get("user_mapping")
         files = state.get("files", {})
         month = state.get("month", "Май")
         year = state.get("year", 2026)
-        
-        # 1. parse_mxl
-        parse_result = await self.worker_client.call_tool("parse_mxl", {"file_path": files.get("mxl")})
-        if parse_result["status"] == "error":
-            await self._set_error(task_id, parse_result.get("error_message"))
+        mxl_path = files.get("mxl")
+        excel_path = files.get("excel")
+        if not mxl_path or not excel_path:
+            await self._set_error(task_id, "Missing file paths")
             return
-        mxl_data = parse_result["result"]["data"]
-        
-        # 2. process_data
-        process_args = {
-            "mxl_data": mxl_data,
-            "month": month,
-            "year": year,
-            "rules": rules
-        }
-        if user_mapping:
-            process_args["user_mapping"] = user_mapping
-        
-        process_result = await self.worker_client.call_tool("process_data", process_args)
-        if process_result["status"] == "error":
-            await self._set_error(task_id, process_result.get("error_message"))
+
+        # 1. Получаем структуру MXL
+        structure_result = await self.worker_client.call_tool("get_mxl_structure", {"file_path": mxl_path})
+        if structure_result.get("status") == "error":
+            await self._set_error(task_id, structure_result.get("error_message"))
             return
-        elif process_result["status"] == "needs_clarification":
-            clarification = process_result["clarification"]
-            context = clarification["context"]
-            # Проверяем, нужно ли предложить маппинг через ИИ
-            if context.get("type") == "column_mapping":
-                # Добавляем в вопрос список колонок, если ещё не добавлен
-                columns = context.get("columns", [])
-                sample_data = context.get("sample_data", [])
-                # Формируем вопрос с колонками
-                question_text = (
-                    f"Не удалось определить структуру MXL-файла. Доступные колонки:\n"
-                    f"{', '.join(columns)}\n\n"
-                    f"Укажите, какая колонка соответствует подразделению и какая – сумме.\n"
-                    f"Или просто скажите 'помоги', и я предложу вариант."
+        columns = structure_result["result"]["columns"]
+        samples = structure_result["result"]["samples"]
+        total_rows = structure_result["result"]["total_rows"]
+
+        # 2. Формируем системный промпт с инструкцией и данными
+        system_prompt = f"""
+Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки.
+Вот инструкция, которой ты должен следовать:
+
+{self.instruction}
+
+Сейчас у тебя есть MXL-файл со следующими колонками:
+{columns}
+
+Примеры строк (первые 10):
+{json.dumps(samples, indent=2, ensure_ascii=False)}
+
+Всего строк: {total_rows}
+
+Твоя задача — проанализировать данные и подготовить структуру для записи в Excel.
+Ты можешь использовать следующие инструменты (вызывай их через функцию call_tool):
+- get_mxl_structure — уже вызван, структура у тебя есть.
+- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}).
+- write_excel(template_path, sheets_data, password, output_path) — записывает данные.
+- read_excel_structure(file_path) — читает структуру Excel (листы и колонки).
+
+Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context).
+
+Порядок действий:
+1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, ПодразделениеКонтрагентДляОтчета, СуммаБезНДС, СуммаСНДС, СтавкаНДС, Комментарий, НомерК7, Сотрудник, Оклад, Премия, ВидНачисленияЗП, ТипОборота, ВидОборота, Направление, ВГО.
+   Если какая-то колонка не найдена или неоднозначна, задай уточняющий вопрос.
+2. Примени фильтры: только Сценарий = "ФАКТ", исключи Подразделение = "ГКП 10.6 (Емельянова)", исключи строки с ВГО = "Да" или Направление содержит "ВГО".
+   Для этого вызови filter_mxl_data с соответствующими фильтрами.
+3. Сгруппируй данные по типам записей: Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ.
+4. Для Взаиморасчетов обработай согласно инструкции:
+   - внутренние отделы (ПодразделениеКонтрагентДляОтчета содержит "руб.") — схлопни дубли (оставь одну строку с ТипОборота="БДР").
+   - другие офисы (др. офис, Ташкент, Краснодар, Павелецкая, NFP) — раздели на БДР и БДДС, добавь название офиса в комментарий.
+5. Для НачислениеЗарплаты сгруппируй по сотруднику: суммируй Оклад (ВидНачисленияЗП="Оплата труда") и Премию (ВидНачисленияЗП="Премия"), административные расходы игнорируй.
+6. Для ФактическийФОТ суммируй Сумму, исключи премию Сорокина Ильи Вячеславовича.
+7. Сформируй структуру для записи в Excel: словарь, где ключ — имя листа (Реализация, ДС, ФОТ, Взаиморасчеты), значение — список строк (каждая строка — dict с колонками).
+   Колонки для каждого листа определи согласно инструкции.
+   Для листа Реализация: Подразделение, Сценарий, Период (текст "Месяц Год"), Контрагент, Проект, Сумма с НДС 20%, Сумма без НДС, Ставка НДС (с преобразованием), Комментарий (Этап), № документа.
+   Для листа ДС: аналогично, но Комментарий — из колонки Комментарий.
+   Для листа ФОТ: Подразделение, Сотрудник, ФОТ (сумма окладов), Премия (сумма премий), Комментарий (объединённый).
+   Для листа Взаиморасчеты: Подразделение, Сценарий, Период, Отдел (результат обработки), Контрагент, Проект, Направление (преобразованное), Сумма без НДС, Комментарий.
+8. Вызови write_excel для записи.
+9. После записи вычисли итоговые показатели (по формулам из инструкции) и верни их в ответе.
+
+Если на каком-то шаге возникают неопределённости — используй ask_user.
+"""
+
+        # 3. Сохраняем историю (системное сообщение + возможные сообщения пользователя)
+        history = [{"role": "system", "content": system_prompt}]
+        # Добавляем начальное сообщение от ассистента с планом
+        init_message = f"Я проанализирую MXL-файл и подготовлю данные для Excel. Месяц: {month}, год: {year}."
+        history.append({"role": "assistant", "content": init_message})
+
+        # 4. Цикл вызовов (максимум 10 итераций)
+        max_iterations = 10
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            try:
+                # Вызов DeepSeek с функцией call_tool
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "call_tool",
+                            "description": "Вызвать инструмент Worker",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {
+                                        "type": "string",
+                                        "enum": ["filter_mxl_data", "write_excel", "read_excel_structure", "ask_user"]
+                                    },
+                                    "arguments": {
+                                        "type": "object",
+                                        "description": "Аргументы для инструмента"
+                                    }
+                                },
+                                "required": ["tool", "arguments"]
+                            }
+                        }
+                    }
+                ]
+                response = await self.client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=history,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.3,
                 )
-                # Сохраняем состояние с вопросом
-                await self.session_manager.update_session(task_id, {
-                    "status": "waiting_question",
-                    "question": {
-                        "text": question_text,
-                        "context": context
-                    },
-                    "pending_tool": "process_data",
-                    "pending_args": process_args,
-                    "mxl_data": mxl_data,  # сохраним для повторных вызовов
-                    "attempts": 0  # счётчик попыток
-                })
+                msg = response.choices[0].message
+                history.append(msg.model_dump())
+
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        func_name = tc.function.name
+                        args = json.loads(tc.function.arguments)
+                        if func_name == "call_tool":
+                            tool_name = args.get("tool")
+                            tool_args = args.get("arguments", {})
+                            if tool_name == "ask_user":
+                                # Отправляем вопрос пользователю
+                                question = tool_args.get("question")
+                                context = tool_args.get("context", {})
+                                await self.session_manager.update_session(task_id, {
+                                    "status": "waiting_question",
+                                    "question": {"text": question, "context": context},
+                                    "pending_args": args  # сохраним для возобновления
+                                })
+                                logger.info(f"Asked user: {question}")
+                                return  # выходим из цикла, ждём ответа пользователя
+                            else:
+                                # Вызываем инструмент Worker
+                                result = await self.worker_client.call_tool(tool_name, tool_args)
+                                # Добавляем результат в историю
+                                tool_response = {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps(result, ensure_ascii=False)
+                                }
+                                history.append(tool_response)
+                else:
+                    # Ассистент дал финальный ответ
+                    content = msg.content
+                    if content:
+                        # Парсим ответ, ожидаем JSON с результатом
+                        try:
+                            result = json.loads(content)
+                            if result.get("status") == "success":
+                                # Завершаем задачу
+                                output_path = result.get("output_path")
+                                metrics = result.get("metrics", {})
+                                await self.session_manager.update_session(task_id, {
+                                    "status": "done",
+                                    "result_file": output_path,
+                                    "metrics": metrics
+                                })
+                                logger.info(f"Task {task_id} completed successfully")
+                                return
+                            else:
+                                await self._set_error(task_id, result.get("error_message", "Unknown error"))
+                                return
+                        except json.JSONDecodeError:
+                            # Если не JSON, просто считаем это сообщением для пользователя
+                            await self.session_manager.update_session(task_id, {
+                                "status": "waiting_question",
+                                "question": {"text": content, "context": {}}
+                            })
+                            return
+            except Exception as e:
+                logger.exception("Agent cycle error")
+                await self._set_error(task_id, str(e))
                 return
-            else:
-                # Другие типы вопросов
-                await self.session_manager.update_session(task_id, {
-                    "status": "waiting_question",
-                    "question": {
-                        "text": clarification["question"],
-                        "context": context
-                    },
-                    "pending_tool": "process_data",
-                    "pending_args": process_args
-                })
-                return
-        
-        # Если успешно – продолжаем
-        processed_data = process_result["result"]
-        # Сохраняем обнаруженный маппинг в память (если он был автоматически определён)
-        detected_mapping = processed_data.get("detected_mapping")
-        if detected_mapping:
-            await self.memory_store.save_column_mapping(detected_mapping)
-        
-        # 3. update_excel
-        excel_result = await self.worker_client.call_tool("update_excel", {
-            "template_path": files.get("excel"),
-            "data": processed_data,
-            "month": month,
-            "year": year,
-            "password": os.getenv("DEFAULT_PASSWORD", "987456")
-        })
-        if excel_result["status"] == "error":
-            await self._set_error(task_id, excel_result.get("error_message"))
-            return
-        output_path = excel_result["result"]["output_path"]
-        
-        # 4. calculate_metrics
-        metrics_result = await self.worker_client.call_tool("calculate_metrics", {
-            "output_path": output_path,
-            "month": month,
-            "year": year,
-            "payroll_data": processed_data.get("payroll_rows")
-        })
-        if metrics_result["status"] == "error":
-            await self._set_error(task_id, metrics_result.get("error_message"))
-            return
-        metrics = metrics_result["result"]
-        
-        # Завершение
-        await self.session_manager.update_session(task_id, {
-            "status": "done",
-            "result_file": output_path,
-            "metrics": metrics
-        })
+        # Если цикл закончился без результата
+        await self._set_error(task_id, "Agent reached maximum iterations without completion")
 
     async def process_answer(self, task_id: str, answer: str):
         state = await self.session_manager.get_session(task_id)
         if not state or state.get("status") != "waiting_question":
             return
-        
-        context = state.get("question", {}).get("context", {})
+        # Возобновляем цикл с ответом пользователя
         pending_args = state.get("pending_args", {})
-        mxl_data = state.get("mxl_data")
-        attempts = state.get("attempts", 0) + 1
-        
-        if context.get("type") == "column_mapping":
-            # Проверяем, просит ли пользователь помощи
-            if "помоги" in answer.lower() or "предлож" in answer.lower() or "какие колонки" in answer.lower():
-                # Используем ИИ для предложения маппинга
-                suggestion = await self._suggest_mapping_with_ai(context.get("columns", []), context.get("sample_data", []))
-                if suggestion:
-                    question_text = (
-                        f"Я предполагаю, что подразделение — это '{suggestion.get('subdivision')}', "
-                        f"а сумма — '{suggestion.get('amount')}'. Подходит?\n"
-                        f"Ответьте 'Да' или 'Нет', или укажите свои варианты в формате: "
-                        f"подразделение: название, сумма: название"
-                    )
-                    await self.session_manager.update_session(task_id, {
-                        "status": "waiting_question",
-                        "question": {
-                            "text": question_text,
-                            "context": context,
-                            "suggestion": suggestion
-                        },
-                        "pending_args": pending_args,
-                        "mxl_data": mxl_data,
-                        "attempts": attempts
-                    })
-                    return
-                else:
-                    await self._send_message_to_user(task_id, "Не удалось предложить маппинг. Пожалуйста, укажите вручную в формате: подразделение: название, сумма: название")
-                    return
-            
-            # Если пользователь ответил "Да" на предложение
-            if "да" in answer.lower() and state.get("question", {}).get("suggestion"):
-                mapping = state["question"]["suggestion"]
-                await self._apply_mapping_and_continue(task_id, mapping, pending_args)
-                return
-            
-            # Если ответ содержит "Нет"
-            if "нет" in answer.lower() and state.get("question", {}).get("suggestion"):
-                await self.session_manager.update_session(task_id, {
-                    "status": "waiting_question",
-                    "question": {
-                        "text": "Укажите правильный маппинг в формате: подразделение: название, сумма: название",
-                        "context": context
-                    },
-                    "pending_args": pending_args,
-                    "mxl_data": mxl_data,
-                    "attempts": attempts
-                })
-                return
-            
-            # Попытка распарсить маппинг из ответа
-            mapping = self._parse_column_mapping(answer, context.get("columns", []))
-            if mapping:
-                await self._apply_mapping_and_continue(task_id, mapping, pending_args)
-                return
-            else:
-                # Если не удалось распарсить, и это не первая попытка – используем ИИ
-                if attempts > 2:
-                    # Передаём весь диалог в ИИ для разбора
-                    suggestion = await self._suggest_mapping_with_ai(context.get("columns", []), context.get("sample_data", []), user_answer=answer)
-                    if suggestion:
-                        question_text = (
-                            f"Я понял ваш ответ и предлагаю такой маппинг: подразделение — '{suggestion.get('subdivision')}', "
-                            f"сумма — '{suggestion.get('amount')}'. Подходит?"
-                        )
-                        await self.session_manager.update_session(task_id, {
-                            "status": "waiting_question",
-                            "question": {
-                                "text": question_text,
-                                "context": context,
-                                "suggestion": suggestion
-                            },
-                            "pending_args": pending_args,
-                            "mxl_data": mxl_data,
-                            "attempts": attempts
-                        })
-                        return
-                # Если не удалось, просим заново
-                await self.session_manager.update_session(task_id, {
-                    "status": "waiting_question",
-                    "question": {
-                        "text": "Не удалось разобрать ваш ответ. Укажите в формате: подразделение: название_колонки, сумма: название_колонки",
-                        "context": context
-                    },
-                    "pending_args": pending_args,
-                    "mxl_data": mxl_data,
-                    "attempts": attempts
-                })
-                return
-        else:
-            # Другие типы вопросов – пока просто передаём ответ как есть (заглушка)
-            await self.session_manager.update_session(task_id, {
-                "status": "processing",
-                "pending_args": pending_args
-            })
-            await self.run_agent_cycle(task_id)
-
-    async def _suggest_mapping_with_ai(self, columns: List[str], sample_data: List[Dict], user_answer: str = "") -> Optional[Dict[str, str]]:
-        """Использует DeepSeek для предложения маппинга колонок."""
-        try:
-            prompt = f"""
-            Ты — помощник по анализу данных. Даны колонки MXL-файла: {columns}.
-            Пример данных (первые строки): {sample_data}.
-            {f'Пользователь сказал: {user_answer}. Используй его подсказку, чтобы уточнить маппинг.' if user_answer else ''}
-            Определи, какая колонка соответствует "подразделение" и какая "сумма".
-            Ответь строго в формате JSON: {{"subdivision": "название_колонки", "amount": "название_колонки"}}.
-            Если уверенности нет, выбери наиболее вероятные.
-            """
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            content = response.choices[0].message.content
-            # Извлекаем JSON из ответа
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                mapping = json.loads(json_match.group())
-                if mapping.get("subdivision") and mapping.get("amount"):
-                    return mapping
-            return None
-        except Exception as e:
-            logger.error(f"AI suggestion failed: {e}")
-            return None
-
-    async def _apply_mapping_and_continue(self, task_id: str, mapping: Dict[str, str], pending_args: dict):
-        """Сохраняет маппинг и продолжает обработку."""
-        # Сохраняем в память
-        await self.memory_store.save_column_mapping(mapping)
-        # Обновляем состояние
+        # Добавляем ответ пользователя в историю (сохраняем в сессии)
+        history = state.get("history", [])
+        history.append({"role": "user", "content": answer})
         await self.session_manager.update_session(task_id, {
-            "user_mapping": mapping,
-            "pending_args": pending_args,
-            "status": "processing"
+            "history": history,
+            "status": "processing",
+            "pending_args": pending_args
         })
-        # Запускаем цикл заново
+        # Продолжаем цикл
         await self.run_agent_cycle(task_id)
 
-    def _parse_column_mapping(self, answer: str, available_columns: List[str]) -> Optional[Dict[str, str]]:
-        """Парсит ответ пользователя вида 'подразделение: Отдел, сумма: Сумма'"""
-        mapping = {}
-        parts = [p.strip() for p in answer.split(',')]
-        for part in parts:
-            if ':' in part:
-                key, value = part.split(':', 1)
-                key = key.strip().lower()
-                value = value.strip()
-                # Проверяем, что такая колонка существует (приблизительно)
-                if value in available_columns or any(value.lower() in col.lower() for col in available_columns):
-                    if 'подраздел' in key or 'отдел' in key:
-                        mapping['subdivision'] = value
-                    elif 'сум' in key or 'стоим' in key:
-                        mapping['amount'] = value
-                    elif 'контрагент' in key or 'клиент' in key:
-                        mapping['contractor'] = value
-                    elif 'ндс' in key:
-                        mapping['vat'] = value
-                    elif 'сотрудник' in key or 'фио' in key:
-                        mapping['employee'] = value
-                    elif 'тип' in key or 'вид' in key:
-                        mapping['type'] = value
-        if mapping.get('subdivision') and mapping.get('amount'):
-            return mapping
-        return None
-
     async def _set_error(self, task_id: str, error_message: str):
+        logger.error(f"Task {task_id} error: {error_message}")
         await self.session_manager.update_session(task_id, {
             "status": "error",
             "error": error_message
-        })
-
-    async def _send_message_to_user(self, task_id: str, message: str):
-        # Отправка сообщения пользователю через Gateway
-        # В текущей архитектуре мы можем сохранить сообщение в состоянии как вопрос,
-        # но это не будет отправлено напрямую. Лучше использовать API Gateway.
-        # Пока для простоты мы можем обновить состояние вопроса
-        await self.session_manager.update_session(task_id, {
-            "status": "waiting_question",
-            "question": {"text": message, "context": {}}
         })
