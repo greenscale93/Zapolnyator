@@ -30,35 +30,6 @@ async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
 
-@router.message(Command("approve"))
-async def cmd_approve(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для подтверждения.")
-        return
-    client = OrchestratorClient()
-    try:
-        await client.approve_llm(task_id)
-        await message.answer("✅ Запрос одобрен. Продолжаю обработку...")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-
-@router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для отмены.")
-        return
-    client = OrchestratorClient()
-    try:
-        await client.cancel_llm(task_id)
-        await message.answer("✅ Запрос отменён.")
-        await state.clear()
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -123,7 +94,6 @@ async def handle_document(message: Message, state: FSMContext):
 async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
     client = OrchestratorClient()
     try:
-        # Извлекаем месяц и год из имени шаблона (можно улучшить позже)
         month = "Май"
         year = 2026
         task_id = await client.create_task(

@@ -74,18 +74,6 @@ async def answer_question(task_id: str, request: TaskAnswerRequest):
     await agent.process_answer(task_id, request.answer)
     return {"status": "ok"}
 
-@router.post("/task/{task_id}/approve")
-async def approve_llm(task_id: str):
-    logger.info(f"Received approve for task {task_id}")
-    await agent.approve_llm_request(task_id)
-    return {"status": "ok"}
-
-@router.post("/task/{task_id}/cancel")
-async def cancel_llm(task_id: str):
-    logger.info(f"Received cancel for task {task_id}")
-    await agent.cancel_llm_request(task_id)
-    return {"status": "ok"}
-
 @router.post("/task/{task_id}/stop")
 async def stop_task(task_id: str):
     logger.info(f"Received stop for task {task_id}")
