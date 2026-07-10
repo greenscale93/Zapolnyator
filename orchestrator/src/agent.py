@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import httpx
+import tempfile
 from openai import AsyncOpenAI
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
@@ -31,8 +32,8 @@ class OrchestratorAgent:
             logger.warning(f"Cannot load instruction: {e}")
             return "Инструкция не загружена."
 
-    async def _send_telegram_message(self, user_id: int, text: str):
-        """Отправляет сообщение пользователю через Telegram API."""
+    async def _send_telegram_message(self, user_id: int, text: str, file_path: str = None):
+        """Отправляет сообщение пользователю через Telegram API, опционально с файлом."""
         if not self.bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN not set, cannot send notification")
             return
@@ -45,8 +46,23 @@ class OrchestratorAgent:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(url, json=payload)
+            if file_path and os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    files = {'document': (os.path.basename(file_path), f, 'text/plain')}
+                    await client.post(
+                        f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
+                        data={'chat_id': user_id},
+                        files=files
+                    )
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+
+    async def _save_debug_data(self, data: dict, prefix: str) -> str:
+        """Сохраняет данные во временный файл и возвращает путь."""
+        fd, path = tempfile.mkstemp(suffix='.txt', prefix=f"{prefix}_")
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(data, indent=2, ensure_ascii=False))
+        return path
 
     async def run_agent_cycle(self, task_id: str):
         logger.info(f"Starting agent cycle for task {task_id}")
@@ -105,41 +121,29 @@ class OrchestratorAgent:
 Сейчас у тебя есть MXL-файл со следующими колонками:
 {columns}
 
-Примеры строк (первые 10):
-{json.dumps(samples, indent=2, ensure_ascii=False)}
-
-Всего строк: {total_rows}
+Общее количество строк: {total_rows}.
 
 Твоя задача — проанализировать данные и подготовить структуру для записи в Excel.
 Ты можешь использовать следующие инструменты (вызывай их через функцию call_tool):
 - get_mxl_structure — уже вызван, структура у тебя есть.
-- filter_mxl_data(file_path, filters, limit) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}). file_path = {mxl_path}. Если данных много, используй limit (по умолчанию 1000) для уменьшения размера ответа.
+- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}). file_path = {mxl_path}. Возвращает все отфильтрованные строки.
 - write_excel(template_path, sheets_data, password, output_path) — записывает данные. template_path = {excel_path}.
 - read_excel_structure(file_path) — читает структуру Excel.
 
-Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context), но только если действительно не хватает информации (например, неясно, как маппить колонки, или новый отдел).
+Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context), но только если действительно не хватает информации.
 
 Порядок действий (строго следуй инструкции):
 1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, ПодразделениеКонтрагентДляОтчета, СуммаБезНДС, СуммаСНДС, СтавкаНДС, Комментарий, НомерК7, Сотрудник, Оклад, Премия, ВидНачисленияЗП, ТипОборота, ВидОборота, Направление, ВГО.
-   Если какая-то колонка не найдена или неоднозначна, задай уточняющий вопрос (ask_user).
-2. Примени фильтры: только Сценарий = "ФАКТ", исключи Подразделение = "ГКП 10.6 (Емельянова)", исключи строки с ВГО = "Да" или Направление содержит "ВГО".
-   Для этого вызови filter_mxl_data с соответствующими фильтрами.
-3. Сгруппируй данные по типам записей: Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ.
-4. Для Взаиморасчетов обработай согласно инструкции:
-   - внутренние отделы (ПодразделениеКонтрагентДляОтчета содержит "руб.") — схлопни дубли (оставь одну строку с ТипОборота="БДР").
-   - другие офисы (др. офис, Ташкент, Краснодар, Павелецкая, NFP) — раздели на БДР и БДДС, добавь название офиса в комментарий.
-5. Для НачислениеЗарплаты сгруппируй по сотруднику: суммируй Оклад (ВидНачисленияЗП="Оплата труда") и Премию (ВидНачисленияЗП="Премия"), административные расходы игнорируй.
-6. Для ФактическийФОТ суммируй Сумму, исключи премию Сорокина Ильи Вячеславовича.
-7. Сформируй структуру для записи в Excel: словарь, где ключ — имя листа (Реализация, ДС, ФОТ, Взаиморасчеты), значение — список строк (каждая строка — dict с колонками).
-   Колонки для каждого листа определи согласно инструкции.
-   Для листа Реализация: Подразделение, Сценарий, Период (текст "Месяц Год"), Контрагент, Проект, Сумма с НДС 20%, Сумма без НДС, Ставка НДС (с преобразованием), Комментарий (Этап), № документа.
-   Для листа ДС: аналогично, но Комментарий — из колонки Комментарий.
-   Для листа ФОТ: Подразделение, Сотрудник, ФОТ (сумма окладов), Премия (сумма премий), Комментарий (объединённый).
-   Для листа Взаиморасчеты: Подразделение, Сценарий, Период, Отдел (результат обработки), Контрагент, Проект, Направление (преобразованное), Сумма без НДС, Комментарий.
-8. Вызови write_excel для записи.
-9. После записи вычисли итоговые показатели (по формулам из инструкции) и верни их в ответе.
+2. Примени фильтры: только Сценарий = "ФАКТ", исключи Подразделение = "ГКП 10.6 (Емельянова)", исключи ВГО.
+3. Сгруппируй данные по типам записей.
+4. Для Взаиморасчетов обработай согласно инструкции.
+5. Для НачислениеЗарплаты сгруппируй по сотруднику.
+6. Для ФактическийФОТ суммируй Сумму, исключи премию Сорокина.
+7. Сформируй структуру для записи в Excel.
+8. Вызови write_excel.
+9. Вычисли итоговые показатели.
 
-Все данные уже на сервере, не запрашивай пути. Используй переданные пути.
+Все данные уже на сервере, не запрашивай пути. Используй фильтры для получения нужных подмножеств данных.
 """
 
         # 3. Сохраняем историю
@@ -177,6 +181,22 @@ class OrchestratorAgent:
                         }
                     }
                 ]
+                # Проверяем размер истории перед отправкой
+                history_json = json.dumps(history, ensure_ascii=False)
+                history_size = len(history_json)
+                if history_size > 4000000:  # ~4 MB
+                    # Сохраняем историю в файл и отправляем пользователю
+                    debug_file = await self._save_debug_data(history, "history_overflow")
+                    await self._send_telegram_message(
+                        user_id,
+                        f"⚠️ Размер истории ({history_size} символов) превышает лимит. Сохранено в файл.",
+                        file_path=debug_file
+                    )
+                    # Обрезаем историю: оставляем системное сообщение и последние 5 сообщений
+                    if len(history) > 6:
+                        history = [history[0]] + history[-5:]
+                    logger.warning(f"History truncated from {len(history)} to 6 messages due to size")
+
                 response = await self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=history,
@@ -189,7 +209,6 @@ class OrchestratorAgent:
                 total_tokens += usage.total_tokens if usage else 0
                 history.append(msg.model_dump())
 
-                # Логируем использование токенов
                 logger.info(f"Iteration {iteration}: tokens used = {usage.total_tokens if usage else 'N/A'}, total so far = {total_tokens}")
 
                 if msg.tool_calls:
@@ -219,17 +238,25 @@ class OrchestratorAgent:
                                     await self._send_telegram_message(user_id, f"❌ Ошибка при вызове {tool_name}: {result.get('error_message')}")
                                 else:
                                     await self._send_telegram_message(user_id, f"✅ Инструмент {tool_name} выполнен успешно.")
+                                # Если результат слишком большой, сохраняем в файл и отправляем пользователю
+                                result_json = json.dumps(result, ensure_ascii=False)
+                                if len(result_json) > 2000000:  # 2 MB
+                                    debug_file = await self._save_debug_data(result, f"tool_{tool_name}_result")
+                                    await self._send_telegram_message(
+                                        user_id,
+                                        f"📦 Результат {tool_name} слишком большой ({len(result_json)} символов). Сохранён в файл.",
+                                        file_path=debug_file
+                                    )
                                 tool_response = {
                                     "role": "tool",
                                     "tool_call_id": tc.id,
-                                    "content": json.dumps(result, ensure_ascii=False)
+                                    "content": result_json
                                 }
                                 history.append(tool_response)
                 else:
                     content = msg.content
                     if content:
                         try:
-                            # Пытаемся распарсить финальный ответ как JSON
                             result = json.loads(content)
                             if result.get("status") == "success":
                                 output_path = result.get("output_path")
@@ -265,8 +292,22 @@ class OrchestratorAgent:
                             return
             except Exception as e:
                 logger.exception("Agent cycle error")
-                await self._set_error(task_id, str(e))
-                await self._send_telegram_message(user_id, f"❌ Критическая ошибка: {str(e)}")
+                error_msg = str(e)
+                # Проверяем, не связана ли ошибка с размером
+                if "413" in error_msg or "Request Entity Too Large" in error_msg:
+                    # Сохраняем последнюю историю и текущий результат в файл
+                    debug_file = await self._save_debug_data({
+                        "history": history[-10:],  # последние 10 сообщений
+                        "error": error_msg
+                    }, "413_error")
+                    await self._send_telegram_message(
+                        user_id,
+                        f"❌ Ошибка 413: запрос слишком большой. Данные сохранены в файл.",
+                        file_path=debug_file
+                    )
+                else:
+                    await self._send_telegram_message(user_id, f"❌ Критическая ошибка: {error_msg[:200]}")
+                await self._set_error(task_id, error_msg)
                 return
         # Если цикл закончился без результата
         await self._set_error(task_id, "Agent reached maximum iterations without completion")
