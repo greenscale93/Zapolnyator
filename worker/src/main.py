@@ -47,7 +47,6 @@ async def call_tool(request: ToolRequest):
         elif request.tool == "filter_mxl_data":
             file_path = request.arguments["file_path"]
             filters = request.arguments.get("filters", {})
-            limit = request.arguments.get("limit", 1000)  # ограничение на количество строк
             parsed = await parse_mxl(file_path)
             if parsed.get("status") == "error":
                 return ToolResponse(status="error", error_message=parsed.get("error_message"))
@@ -60,14 +59,14 @@ async def call_tool(request: ToolRequest):
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
                     filtered = [row for row in filtered if row.get(col) == value]
-            total_filtered = len(filtered)
-            if total_filtered > limit:
-                filtered = filtered[:limit]
+            # Проверяем сериализуемость
+            try:
+                json.dumps(filtered, ensure_ascii=False, default=str)
+            except Exception as e:
+                return ToolResponse(status="error", error_message=f"Data serialization error: {e}")
             return ToolResponse(status="success", result={
                 "filtered_data": filtered,
-                "count": total_filtered,
-                "limited": total_filtered > limit,
-                "limit": limit
+                "count": len(filtered)
             })
         
         elif request.tool == "write_excel":
