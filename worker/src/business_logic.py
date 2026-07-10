@@ -44,13 +44,15 @@ async def process_data(mxl_data: List[Dict[str, str]], month: str, year: int, ru
         
         # Если не нашли ключевые колонки – запрашиваем уточнение
         if not col_subdivision or not col_amount:
+            sample_data = mxl_data[:3] if len(mxl_data) >= 3 else mxl_data
             return {
                 "status": "needs_clarification",
                 "clarification": {
-                    "question": "Не удалось определить структуру MXL-файла. Укажите, какая колонка соответствует подразделению (например, 'Отдел') и какая – сумме (например, 'Сумма'). Ответьте в формате: подразделение: название_колонки, сумма: название_колонки",
+                    "question": "Не удалось определить структуру MXL-файла. Укажите, какая колонка соответствует подразделению и какая – сумме. \nДоступные колонки: " + ", ".join(columns),
                     "context": {
                         "type": "column_mapping",
                         "columns": columns,
+                        "sample_data": sample_data,  # добавим для ИИ
                         "missing": {
                             "subdivision": not col_subdivision,
                             "amount": not col_amount
