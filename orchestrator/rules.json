@@ -89,7 +89,9 @@
       },
       "append_to_end": true,
       "header_row": 2,
-      "filters": {},
+      "filters": {
+        "ТипЗаписи": "Взаиморасчет"
+      },
       "exclude_filters": {
         "ТипОборота": ["Доход ВГО", "Расход ВГО"]
       },
