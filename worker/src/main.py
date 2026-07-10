@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import re
+import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
@@ -49,6 +50,26 @@ async def call_tool(request: ToolRequest):
                 return ToolResponse(status="error", error_message=result.get("error_message"))
             return ToolResponse(status="success", result=result.get("result"))
         
+        elif request.tool == "read_excel_data":
+            file_path = request.arguments["file_path"]
+            sheet_name = request.arguments.get("sheet_name")  # если не указан, первый лист
+            try:
+                df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
+                # Заменяем NaN на None
+                df = df.where(pd.notnull(df), None)
+                data = df.to_dict(orient='records')
+                columns = df.columns.tolist()
+                # Очищаем данные
+                data = sanitize_data(data)
+                return ToolResponse(status="success", result={
+                    "data": data,
+                    "columns": columns,
+                    "rows": len(data)
+                })
+            except Exception as e:
+                logger.exception("read_excel_data error")
+                return ToolResponse(status="error", error_message=str(e))
+        
         elif request.tool == "filter_mxl_data":
             file_path = request.arguments["file_path"]
             filters = request.arguments.get("filters", {})
@@ -56,7 +77,7 @@ async def call_tool(request: ToolRequest):
             if file_path.endswith('.csv'):
                 import csv
                 data = []
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, 'r', encoding='utf-8-sig') as f:
                     reader = csv.DictReader(f)
                     data = list(reader)
             else:
@@ -71,13 +92,10 @@ async def call_tool(request: ToolRequest):
                 if value is None:
                     continue
                 if isinstance(value, list):
-                    # Если список — проверяем вхождение
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
-                    # Строковое сравнение
                     filtered = [row for row in filtered if row.get(col) == value]
             
-            # Очищаем данные
             filtered = sanitize_data(filtered)
             return ToolResponse(status="success", result={
                 "filtered_data": filtered,

@@ -38,11 +38,11 @@ async def handle_document(message: Message, state: FSMContext):
 
     data = await state.get_data()
     excel_path = data.get("excel_path")
-    mxl_path = data.get("mxl_path")
+    data_path = data.get("data_path")
 
-    if excel_path and mxl_path:
+    if excel_path and data_path:
         await message.answer("Вы уже загрузили оба файла. Начинаю обработку...")
-        await start_processing(message, state, excel_path, mxl_path)
+        await start_processing(message, state, excel_path, data_path)
         return
 
     if ext in ['.xlsx', '.xls']:
@@ -53,33 +53,33 @@ async def handle_document(message: Message, state: FSMContext):
         await state.update_data(excel_path=file_path)
         await message.answer(f"✅ Excel-файл «{file_name}» сохранён.")
     elif ext == '.mxl':
-        if mxl_path:
+        if data_path:
             await message.answer("MXL-файл уже был загружен. Если хотите заменить, отправьте новый.")
             return
         file_path = await save_document(doc, "mxl")
-        await state.update_data(mxl_path=file_path)
+        await state.update_data(data_path=file_path)
         await message.answer(f"✅ MXL-файл «{file_name}» сохранён.")
     else:
         await message.answer("Неизвестный формат. Пожалуйста, отправьте Excel (.xlsx/.xls) или MXL (.mxl) файл.")
         return
 
     data = await state.get_data()
-    if data.get("excel_path") and data.get("mxl_path"):
+    if data.get("excel_path") and data.get("data_path"):
         await message.answer("✅ Оба файла успешно загружены на сервер!")
-        await start_processing(message, state, data["excel_path"], data["mxl_path"])
+        await start_processing(message, state, data["excel_path"], data["data_path"])
     else:
         if not data.get("excel_path"):
             await message.answer("Ожидаю Excel-файл (.xlsx/.xls).")
-        if not data.get("mxl_path"):
+        if not data.get("data_path"):
             await message.answer("Ожидаю MXL-файл (.mxl).")
 
-async def start_processing(message: Message, state: FSMContext, excel_path: str, mxl_path: str):
+async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
     client = OrchestratorClient()
     try:
         task_id = await client.create_task(
             user_id=message.from_user.id,
             excel_path=excel_path,
-            mxl_path=mxl_path,
+            data_path=data_path,
             month="Май",
             year=2026
         )

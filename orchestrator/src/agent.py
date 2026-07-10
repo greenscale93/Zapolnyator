@@ -35,61 +35,31 @@ class OrchestratorAgent:
             return "Инструкция не загружена."
 
     async def _send_telegram_message(self, user_id: int, text: str, file_path: str = None):
-        """Отправляет сообщение и опционально файл в Telegram с подробным логированием."""
         if not self.bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN not set")
             return
-        
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {"chat_id": user_id, "text": text, "parse_mode": "HTML"}
-        
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Отправляем текстовое сообщение
-                msg_resp = await client.post(url, json=payload)
-                msg_resp.raise_for_status()
-                logger.info(f"Message sent to user {user_id}")
-
-                # Если есть файл — отправляем
-                if file_path:
-                    if os.path.exists(file_path):
-                        file_size = os.path.getsize(file_path)
-                        logger.info(f"Sending file: {file_path} ({file_size} bytes)")
-                        
-                        # Проверяем размер (Telegram limit 50 MB)
-                        if file_size > 50 * 1024 * 1024:
-                            await client.post(url, json={
-                                "chat_id": user_id,
-                                "text": f"⚠️ Файл слишком большой ({file_size} байт). Отправка невозможна."
-                            })
-                            return
-                        
-                        with open(file_path, 'rb') as f:
-                            files = {'document': (os.path.basename(file_path), f, 'text/plain')}
-                            doc_resp = await client.post(
-                                f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
-                                data={'chat_id': user_id},
-                                files=files
-                            )
-                            doc_resp.raise_for_status()
-                            logger.info(f"File sent successfully: {file_path}")
-                    else:
-                        logger.error(f"File not found: {file_path}")
+                await client.post(url, json=payload)
+                if file_path and os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    if file_size > 50 * 1024 * 1024:
                         await client.post(url, json={
                             "chat_id": user_id,
-                            "text": f"❌ Файл не найден: {file_path}"
+                            "text": f"⚠️ Файл слишком большой ({file_size} байт). Отправка невозможна."
                         })
+                        return
+                    with open(file_path, 'rb') as f:
+                        files = {'document': (os.path.basename(file_path), f, 'text/plain')}
+                        await client.post(
+                            f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
+                            data={'chat_id': user_id},
+                            files=files
+                        )
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
-            # Пытаемся отправить сообщение об ошибке
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(url, json={
-                        "chat_id": user_id,
-                        "text": f"❌ Ошибка отправки: {str(e)[:200]}"
-                    })
-            except:
-                pass
 
     async def _save_debug_data(self, data, prefix: str) -> str:
         fd, path = tempfile.mkstemp(suffix='.txt', prefix=f"{prefix}_")
@@ -98,7 +68,6 @@ class OrchestratorAgent:
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
             else:
                 f.write(str(data))
-        logger.info(f"Debug data saved to {path} ({os.path.getsize(path)} bytes)")
         return path
 
     def _sanitize_for_json(self, obj):
@@ -120,9 +89,9 @@ class OrchestratorAgent:
         
         user_id = state.get("user_id")
         files = state.get("files", {})
-        mxl_path = files.get("mxl")
+        data_file_path = files.get("data")  # теперь это может быть MXL или XLSX
         excel_path = files.get("excel")
-        if not mxl_path or not excel_path:
+        if not data_file_path or not excel_path:
             await self._set_error(task_id, "Missing file paths")
             await self._send_telegram_message(user_id, "❌ Ошибка: отсутствуют пути к файлам.")
             return
@@ -130,27 +99,49 @@ class OrchestratorAgent:
         month = state.get("month", "Май")
         year = state.get("year", 2026)
 
-        # 1. Конвертируем MXL в CSV
-        await self._send_telegram_message(user_id, "🔄 Конвертирую MXL в CSV...")
-        convert_result = await self.worker_client.call_tool("convert_mxl_to_csv", {"file_path": mxl_path})
-        if convert_result.get("status") == "error":
-            await self._set_error(task_id, convert_result.get("error_message"))
-            await self._send_telegram_message(user_id, f"❌ Ошибка конвертации MXL: {convert_result.get('error_message')}")
-            return
-        csv_path = convert_result["result"]["csv_path"]
-        csv_data = convert_result["result"]["csv_data"]
-        rows = convert_result["result"]["rows"]
-        columns = convert_result["result"]["columns"]
-        size = convert_result["result"]["size_bytes"]
-        
-        # Отправляем CSV файл пользователю
-        await self._send_telegram_message(
-            user_id,
-            f"📄 CSV-файл создан ({rows} строк, {size} байт). Отправляю файл.",
-            file_path=csv_path
-        )
+        # Определяем тип файла и читаем данные
+        if data_file_path.lower().endswith(('.xlsx', '.xls')):
+            await self._send_telegram_message(user_id, "📊 Читаю данные из Excel...")
+            read_result = await self.worker_client.call_tool("read_excel_data", {"file_path": data_file_path})
+            if read_result.get("status") == "error":
+                await self._set_error(task_id, read_result.get("error_message"))
+                await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {read_result.get('error_message')}")
+                return
+            data = read_result["result"]["data"]
+            columns = read_result["result"]["columns"]
+            total_rows = read_result["result"]["rows"]
+            data_source = "Excel"
+        else:
+            # MXL — конвертируем в CSV
+            await self._send_telegram_message(user_id, "🔄 Конвертирую MXL в CSV...")
+            convert_result = await self.worker_client.call_tool("convert_mxl_to_csv", {"file_path": data_file_path})
+            if convert_result.get("status") == "error":
+                await self._set_error(task_id, convert_result.get("error_message"))
+                await self._send_telegram_message(user_id, f"❌ Ошибка конвертации MXL: {convert_result.get('error_message')}")
+                return
+            csv_path = convert_result["result"]["csv_path"]
+            data = convert_result["result"]["csv_data"]  # строка CSV
+            columns = convert_result["result"]["columns"]
+            total_rows = convert_result["result"]["rows"]
+            data_source = "MXL (преобразован в CSV)"
+            # Отправляем CSV-файл пользователю
+            await self._send_telegram_message(
+                user_id,
+                f"📄 CSV-файл создан ({total_rows} строк, {convert_result['result']['size_bytes']} байт). Отправляю файл.",
+                file_path=csv_path
+            )
 
-        # 2. Читаем структуру Excel
+        # Если данные — список словарей, берём их напрямую; если строка CSV — передаём путь
+        if isinstance(data, list):
+            preview = data[:5] if len(data) > 5 else data
+            data_preview = preview
+            data_path_for_tool = data_file_path  # для filter_mxl_data будем использовать путь к файлу
+        else:
+            # data — это CSV-строка, но мы уже сохранили CSV-файл (csv_path)
+            data_path_for_tool = csv_path if 'csv_path' in locals() else data_file_path
+            preview = []  # не можем показать примеры из строки
+
+        # Читаем структуру Excel
         await self._send_telegram_message(user_id, "🔍 Читаю структуру Excel...")
         excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": excel_path})
         if excel_struct.get("status") == "error":
@@ -158,35 +149,38 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {excel_struct.get('error_message')}")
             return
 
-        # 3. Формируем системный промпт
+        # Формируем системный промпт
         system_prompt = f"""
-Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки (конвертирована в CSV).
-Вот полная инструкция:
-
-{self.instruction}
-
-Файлы уже загружены:
-- CSV-данные (все строки) доступны по пути: {csv_path}
-- Excel-шаблон: {excel_path}
+Ты — ИИ-агент, который заполняет отчёт ДКП по данным из выгрузки.
+Источник данных: {data_source}.
+Колонки: {columns}
+Всего строк: {total_rows}
+Данные уже загружены на сервер и доступны по пути: {data_path_for_tool}
+Excel-шаблон: {excel_path}
 Месяц: {month}, год: {year}.
 
-Колонки в CSV: {columns}
-Всего строк: {rows}
+Инструкция:
+{self.instruction}
 
 Ты можешь использовать инструменты:
-- filter_mxl_data(file_path, filters) — фильтрует CSV-файл по критериям. file_path = {csv_path}. filters — словарь с колонками и значениями. ОДИН ВЫЗОВ может содержать несколько фильтров. 
+- filter_mxl_data(file_path, filters) — фильтрует данные по колонкам. file_path = {data_path_for_tool}. filters — словарь с колонками и значениями. Используй этот инструмент ДЛЯ ПОЛУЧЕНИЯ ДАННЫХ ПО ТИПАМ ЗАПИСЕЙ (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ).
 - write_excel(template_path, sheets_data, password, output_path) — записывает данные в Excel.
 - read_excel_structure — уже вызван.
 
 Порядок действий:
-1. Определи соответствие колонок (ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д.). Если неясно — задай вопрос через ask_user.
-2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО. Для этого сделай ОДИН вызов filter_mxl_data с фильтрами, либо несколько по типам записей.
+1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д. (смотри по названиям).
+2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО. Делай ОТДЕЛЬНЫЕ ВЫЗОВЫ filter_mxl_data для каждого типа записи:
+   - {{"ТипЗаписи": "Реализация", "Сценарий": "ФАКТ"}}
+   - {{"ТипЗаписи": "Оплата", "Сценарий": "ФАКТ"}}
+   - {{"ТипЗаписи": "Взаиморасчет", "Сценарий": "ФАКТ"}}
+   - {{"ТипЗаписи": "НачислениеЗарплаты", "Сценарий": "ФАКТ"}}
+   - {{"ТипЗаписи": "ФактическийФОТ", "Сценарий": "ФАКТ"}}
 3. Обработай каждый тип согласно инструкции.
 4. Сформируй структуру для записи в Excel (словарь лист->список строк).
 5. Вызови write_excel.
 6. Вычисли показатели.
 
-Важно: НЕ ДЕЛАЙ МНОГО ВЫЗОВОВ ОДНОГО И ТОГО ЖЕ. Используй filter_mxl_data только для получения данных по типам записей (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ).
+НЕ ДЕЛАЙ ЛИШНИХ ВЫЗОВОВ filter_mxl_data. Используй только для получения данных по типам.
 """
 
         # Сохраняем промпт в файл для утверждения
@@ -199,7 +193,6 @@ class OrchestratorAgent:
             f"📝 Сформирован запрос к LLM. Для продолжения отправьте /approve, для отмены /cancel. Файл с промптом:",
             file_path=prompt_file
         )
-        # Сохраняем состояние ожидания утверждения
         await self.session_manager.update_session(task_id, {
             "status": "waiting_llm_approval",
             "pending_prompt_file": prompt_file,
@@ -385,7 +378,7 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, f"📥 Ответ получен: {answer[:100]}...")
             await self._run_llm_cycle(task_id, history, user_id)
         elif status == "waiting_llm_approval":
-            pass  # handled by commands
+            pass
 
     async def stop_task(self, task_id: str):
         if task_id in self.pending_approval:

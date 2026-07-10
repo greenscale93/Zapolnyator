@@ -30,13 +30,13 @@ class OrchestratorClient:
                 logger.error(f"Request error: {e}")
                 raise
 
-    async def create_task(self, user_id: int, excel_path: str, mxl_path: str, month: str, year: int) -> str:
+    async def create_task(self, user_id: int, excel_path: str, data_path: str, month: str, year: int) -> str:
         url = f"{self.base_url}/api/v1/task"
         payload = {
             "user_id": user_id,
             "files": {
                 "excel": excel_path,
-                "mxl": mxl_path
+                "mxl": data_path
             },
             "month": month,
             "year": year
