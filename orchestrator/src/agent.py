@@ -37,8 +37,11 @@ class OrchestratorAgent:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         try:
+            print(f"DEBUG: Sending Telegram message to {user_id}, text={text[:100]}..., reply_markup={json.dumps(reply_markup, ensure_ascii=False)[:200]}")
             async with httpx.AsyncClient(timeout=30.0) as client:
-                await client.post(url, json=payload)
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                print(f"DEBUG: Telegram message sent successfully")
                 if file_path and os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
                         files = {'document': (os.path.basename(file_path), f, 'text/plain')}
@@ -49,18 +52,25 @@ class OrchestratorAgent:
                         )
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
+            print(f"DEBUG: Telegram send error: {e}")
 
     def _build_office_keyboard(self, offices: list, contractor: str):
+        """
+        Строит клавиатуру, где callback_data содержит индекс офиса, а не полное название.
+        Это решает проблему с длиной callback_data > 64 байт.
+        """
         keyboard = []
         row = []
-        for office in offices:
-            row.append({"text": office, "callback_data": f"map_office|{contractor}|{office}"})
+        for idx, office in enumerate(offices):
+            # callback_data: map_office|<contractor>|<idx>
+            row.append({"text": office, "callback_data": f"map_office|{contractor}|{idx}"})
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([{"text": "Чужой офис", "callback_data": f"map_office|{contractor}|Взаиморасчеты с др. офисами"}])
+        # Кнопка "Чужой офис" отправляет специальный индекс -1
+        keyboard.append([{"text": "Чужой офис", "callback_data": f"map_office|{contractor}|-1"}])
         return keyboard
 
     async def run_agent_cycle(self, task_id: str, resume_from_question: bool = False):
@@ -140,14 +150,16 @@ class OrchestratorAgent:
                     await self._send_telegram_message(user_id, f"❌ Ошибка чтения шаблона: {str(e)}")
                     return
 
+                # Сохраняем список офисов в сессии для сопоставления индексов
                 await self.session_manager.update_session(task_id, {
                     "status": "waiting_question",
                     "question": {
                         "type": "vz_office_mapping",
                         "contractors": unknown,
-                        "offices": offices,
+                        "offices": offices,          # полный список для сопоставления
                         "current_idx": 0
-                    }
+                    },
+                    "offices_options": offices      # дополнительно для быстрого доступа
                 })
                 contractor = unknown[0]
                 reply_markup = {"inline_keyboard": self._build_office_keyboard(offices, contractor)}
@@ -191,17 +203,35 @@ class OrchestratorAgent:
             await self._set_error(task_id, "No output file generated")
 
     async def handle_answer(self, task_id: str, answer_data: str):
+        """
+        answer_data имеет формат: map_office|contractor|index
+        где index - число (индекс в списке offices_options) или -1 для "Чужой офис"
+        """
         parts = answer_data.split("|")
         if len(parts) != 3 or parts[0] != "map_office":
             return
         contractor = parts[1]
-        selected_office = parts[2]
-        set_mapping(contractor, selected_office)
+        idx_str = parts[2]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            return
 
         state = await self.session_manager.get_session(task_id)
         question = state.get("question")
-        if not question or question.get("type") != "vz_office_mapping":
+        offices_options = state.get("offices_options", [])
+        if not question or not offices_options:
             return
+
+        # Определяем выбранный офис
+        if idx == -1:
+            selected_office = "Взаиморасчеты с др. офисами"   # базовая строка (дальше оркестратор сам разберёт по БДР/БДДС)
+        else:
+            if idx < 0 or idx >= len(offices_options):
+                return
+            selected_office = offices_options[idx]
+
+        set_mapping(contractor, selected_office)
 
         contractors = question["contractors"]
         current_idx = question["current_idx"]
@@ -209,8 +239,7 @@ class OrchestratorAgent:
             current_idx += 1
             if current_idx < len(contractors):
                 next_contractor = contractors[current_idx]
-                offices = question["offices"]
-                reply_markup = {"inline_keyboard": self._build_office_keyboard(offices, next_contractor)}
+                reply_markup = {"inline_keyboard": self._build_office_keyboard(offices_options, next_contractor)}
                 user_id = state["user_id"]
                 await self._send_telegram_message(user_id,
                     f"Выберите подразделение для контрагента «{next_contractor}»:",
@@ -220,7 +249,7 @@ class OrchestratorAgent:
                     "question": {
                         "type": "vz_office_mapping",
                         "contractors": contractors,
-                        "offices": offices,
+                        "offices": offices_options,
                         "current_idx": current_idx
                     }
                 })
