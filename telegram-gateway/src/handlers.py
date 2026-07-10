@@ -108,7 +108,7 @@ async def cmd_stop(message: Message, state: FSMContext):
         client = OrchestratorClient()
         await client.stop_task(task_id)
         await state.clear()
-        await message.answer("🛑 Задача остановлена.", reply_markup=main_keyboard())
+        await message.answer("🛑 Задача остановлена!.", reply_markup=main_keyboard())
     else:
         await message.answer("Нет активной задачи.")
 
