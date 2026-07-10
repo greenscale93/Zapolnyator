@@ -24,3 +24,18 @@ class OrchestratorClient:
             resp.raise_for_status()
             data = resp.json()
             return data["task_id"]
+        
+    async def get_task_status(self, task_id: str) -> dict:
+        url = f"{self.base_url}/api/v1/task/{task_id}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def answer_question(self, task_id: str, answer: str) -> dict:
+        url = f"{self.base_url}/api/v1/task/{task_id}/answer"
+        payload = {"answer": answer}
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
