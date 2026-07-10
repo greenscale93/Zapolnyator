@@ -11,7 +11,7 @@ from src.agent import OrchestratorAgent
 
 router = APIRouter()
 
-# Глобальные объекты (можно заменить на DI, но пока так)
+# Глобальные объекты
 session_manager = SessionManager()
 memory_store = MemoryStore()
 worker_client = WorkerClient()
@@ -38,13 +38,13 @@ class DeleteMappingRequest(BaseModel):
 @router.post("/api/v1/task")
 async def create_task(request: CreateTaskRequest):
     task_id = str(uuid.uuid4())
-    await session_manager.create_session(task_id, {
-        "user_id": request.user_id,
-        "files": request.files,
-        "month": request.month,
-        "year": request.year,
-        "status": "running"
-    })
+    await session_manager.init_session(
+        task_id=task_id,
+        user_id=request.user_id,
+        files=request.files,
+        month=request.month,
+        year=request.year
+    )
     # Запускаем обработку в фоне
     asyncio.create_task(agent.run_agent_cycle(task_id))
     return {"task_id": task_id}
@@ -70,14 +70,14 @@ async def stop_task(task_id: str):
 
 @router.get("/api/v1/autotest/status/{user_id}")
 async def get_autotest_status(user_id: int):
-    enabled = await session_manager.get_autotest(user_id)
+    enabled = await session_manager.get_auto_test_status(user_id)
     return {"enabled": enabled}
 
 @router.post("/api/v1/autotest/toggle/{user_id}")
 async def toggle_autotest(user_id: int):
-    current = await session_manager.get_autotest(user_id)
+    current = await session_manager.get_auto_test_status(user_id)
     new_status = not current
-    await session_manager.set_autotest(user_id, new_status)
+    await session_manager.set_auto_test_status(user_id, new_status)
     return {"enabled": new_status}
 
 # ================== МАППИНГ (НОВЫЕ) ==================
