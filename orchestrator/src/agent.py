@@ -193,7 +193,6 @@ class OrchestratorAgent:
             await self.session_manager.update_session(task_id, {"output_path": output_path})
 
         if output_path:
-            await self._send_telegram_message(user_id, "✅ Обработка завершена! Файл будет отправлен.")
             await self.session_manager.update_session(task_id, {
                 "status": "done",
                 "result_file": output_path,

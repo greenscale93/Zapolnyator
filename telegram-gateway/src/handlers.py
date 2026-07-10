@@ -20,7 +20,6 @@ LAST_FILES_PATH = os.path.join(TEMP_DIR, "last_files.json")
 class WaitingState(StatesGroup):
     answer = State()
 
-# === Главное меню ===
 def main_keyboard():
     kb = [
         [KeyboardButton(text="/autotest")],
@@ -108,7 +107,7 @@ async def cmd_stop(message: Message, state: FSMContext):
         client = OrchestratorClient()
         await client.stop_task(task_id)
         await state.clear()
-        await message.answer("🛑 Задача остановлена!.", reply_markup=main_keyboard())
+        await message.answer("🛑 Задача остановлена.", reply_markup=main_keyboard())
     else:
         await message.answer("Нет активной задачи.")
 
@@ -179,8 +178,16 @@ async def start_processing(message: Message, state: FSMContext, excel_path: str,
         await message.answer(f"❌ Ошибка создания задачи: {str(e)}")
         await state.clear()
         return
-    await state.update_data(task_id=task_id)
+    await state.update_data(task_id=task_id, polling_active=False)
     await message.answer(f"✅ Задача создана (ID: {task_id}). Обработка...")
+    # Запускаем мониторинг только если он не активен
+    await start_polling_if_needed(message, state, task_id)
+
+async def start_polling_if_needed(message: Message, state: FSMContext, task_id: str):
+    data = await state.get_data()
+    if data.get("polling_active"):
+        return
+    await state.update_data(polling_active=True)
     asyncio.create_task(poll_task_status(message, state, task_id))
 
 async def poll_task_status(message: Message, state: FSMContext, task_id: str):
@@ -190,16 +197,20 @@ async def poll_task_status(message: Message, state: FSMContext, task_id: str):
             status = await client.get_task_status(task_id)
         except Exception as e:
             await message.answer(f"❌ Ошибка статуса: {str(e)}")
+            await state.update_data(polling_active=False)
             break
 
         if status["status"] == "done":
-            file_url = status.get("result", {}).get("file_url")
-            if file_url:
+            result = status.get("result", {})
+            file_path = result.get("result_file") or status.get("result_file")
+            if file_path and os.path.exists(file_path):
                 try:
-                    file = FSInputFile(file_url)
+                    file = FSInputFile(file_path)
                     await message.answer_document(file, caption="📁 Готовый отчёт")
                 except Exception as e:
                     await message.answer(f"❌ Ошибка отправки файла: {str(e)}")
+            else:
+                await message.answer("✅ Обработка завершена, но файл не найден.")
             await message.answer("✅ Обработка завершена.")
             await state.clear()
             break
@@ -207,15 +218,14 @@ async def poll_task_status(message: Message, state: FSMContext, task_id: str):
         elif status["status"] == "error":
             await message.answer(f"❌ Ошибка: {status.get('error')}")
             await state.clear()
+            await state.update_data(polling_active=False)
             break
 
         elif status["status"] == "waiting_question":
             question = status.get("question")
             if question and question.get("type") == "vz_office_mapping":
-                # Оркестратор уже отправил сообщение с кнопками, ничего не делаем
                 pass
             else:
-                # Обычный текстовый вопрос
                 question_text = question.get("text", "Уточните, пожалуйста.")
                 await state.update_data(waiting_question=question)
                 await message.answer(f"❓ {question_text}")
@@ -228,7 +238,7 @@ async def handle_answer(message: Message, state: FSMContext):
     data = await state.get_data()
     task_id = data.get("task_id")
     if not task_id:
-        await message.answer("❌ Не найден идентификатор задачи. Попробуйте начать заново.")
+        await message.answer("❌ Не найден идентификатор задачи.")
         await state.clear()
         return
 
@@ -242,9 +252,8 @@ async def handle_answer(message: Message, state: FSMContext):
 
     await message.answer("✅ Ответ принят. Продолжаю обработку...")
     await state.set_state(None)
-    asyncio.create_task(poll_task_status(message, state, task_id))
+    await start_polling_if_needed(message, state, task_id)
 
-# === ОБРАБОТЧИК INLINE-КНОПОК (CALLBACK) ===
 @router.callback_query()
 async def handle_callback(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
@@ -255,20 +264,17 @@ async def handle_callback(callback: types.CallbackQuery, state: FSMContext):
         if not task_id:
             await callback.answer("Нет активной задачи", show_alert=True)
             return
-        # Отправляем ответ в оркестратор
         await client.answer_question(task_id, data)
-        # Убираем кнопки, чтобы не нажимали повторно
         await callback.message.edit_reply_markup()
         await callback.answer("Выбор сохранён")
-        # Перезапускаем мониторинг задачи (могут быть ещё вопросы или завершение)
-        asyncio.create_task(poll_task_status(callback.message, state, task_id))
+        # Перезапускаем мониторинг (если ещё не активен)
+        await start_polling_if_needed(callback.message, state, task_id)
         return
 
     elif data.startswith("del_mapping|"):
         contractor = data.split("|")[1]
         task_id = (await state.get_data()).get("task_id", "dummy")
         await client.delete_mapping(task_id, contractor)
-        # Убираем удалённую кнопку из списка
         new_markup = remove_button(callback.message.reply_markup, contractor)
         await callback.message.edit_reply_markup(reply_markup=new_markup)
         await callback.answer("Маппинг удалён")
