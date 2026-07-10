@@ -78,6 +78,7 @@ def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     turnover_field = config.get("turnover_type_field", "ТипОборота")
     
     dir_map = config.get("direction_mapping", {})
+    # Создаём новую колонку с вычисленным направлением (перезаписываем direction_field)
     df["Направление"] = df[direction_field].map(dir_map)
     unmapped = df[df["Направление"].isna()][direction_field].unique()
     if len(unmapped) > 0:
@@ -124,14 +125,18 @@ def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     if not df_regular.empty:
         group_keys = ["Подразделение", "Контрагент", "Проект", office_col, "Направление"]
         df_regular = df_regular.groupby(group_keys, as_index=False).first()
-        for col in [turnover_field, direction_field, "ПодразделениеКонтрагент"]:
+        # Удаляем служебные колонки, которые больше не нужны
+        for col in [turnover_field, "ПодразделениеКонтрагент"]:
             if col in df_regular.columns:
                 df_regular.drop(columns=[col], inplace=True)
 
     df = pd.concat([df_regular, df_special], ignore_index=True)
 
-    # Убираем ставшие ненужными колонки
-    cols_to_drop = [c for c in [direction_field, turnover_field, "ПодразделениеКонтрагент"] if c in df.columns]
+    # Убираем оставшиеся служебные колонки, но НЕ трогаем "Направление" (direction_field)
+    cols_to_drop = [c for c in [turnover_field, "ПодразделениеКонтрагент"] if c in df.columns]
+    # Также удаляем исходный direction_field только если он отличается от "Направление"
+    if direction_field != "Направление" and direction_field in df.columns:
+        cols_to_drop.append(direction_field)
     if cols_to_drop:
         df.drop(columns=cols_to_drop, inplace=True)
 
@@ -170,8 +175,12 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
+        # Очистка денежных колонок: убираем неразрывные пробелы, запятые, превращаем в числа.
+        # СтавкаНДС исключается, т.к. может содержать проценты или текст "Без НДС".
         money_keywords = ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']
         for col in df_source.columns:
+            if col == "СтавкаНДС":
+                continue
             if any(kw in col for kw in money_keywords):
                 df_source[col] = (
                     df_source[col]
@@ -212,7 +221,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
 
-        # ======== КАСТОМНАЯ ОБРАБОТКА ========
+        # ======== КАСТОМНАЯ ОБРАБОТКА (ВЗАИМОРАСЧЕТЫ) ========
         custom = mapping.get("custom_processing")
         if custom and custom.get("type") == "vzaimoraschety":
             df_source = _preprocess_vzaimoraschety(df_source, custom)
@@ -304,7 +313,8 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 else:
                     if source_expr in row_dict:
                         val = row_dict[source_expr]
-                        if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']):
+                        # clean_number только для денежных колонок
+                        if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']) and source_expr != "СтавкаНДС":
                             val = clean_number(val)
                         new_row[target_col_idx] = val
                     else:
