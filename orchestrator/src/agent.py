@@ -81,17 +81,22 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, "❌ Нет правил для заполнения. Проверьте rules.json.")
             return
 
-        output_path = None
+        output_path = None  # будет хранить путь к выходному файлу
+        first_sheet = True
+
         for sheet_name, mapping in sheets_mapping.items():
             await self._send_telegram_message(user_id, f"📝 Заполняю лист: {sheet_name}...")
+            
+            # Для первого листа output_path = None, для остальных — передаём существующий путь
             result = await self.worker_client.call_tool("apply_sheet_mapping", {
                 "source_path": data_file_path,
-                "template_path": excel_path if not output_path else output_path,
+                "template_path": excel_path if output_path is None else output_path,  # если есть output_path, используем его как шаблон
                 "sheet_name": sheet_name,
                 "mapping": mapping,
                 "month": month,
                 "year": year,
-                "password": "987456"
+                "password": "987456",
+                "output_path": output_path  # передаём существующий путь, чтобы не создавать новый файл
             })
             if result.get("status") == "error":
                 await self._set_error(task_id, result.get("error_message"))
@@ -100,6 +105,7 @@ class OrchestratorAgent:
             output_path = result["result"]["output_path"]
             rows_added = result["result"].get("rows_added", "неизвестно")
             await self._send_telegram_message(user_id, f"✅ Лист {sheet_name} заполнен (добавлено строк: {rows_added}).")
+            first_sheet = False
 
         if output_path:
             await self._send_telegram_message(

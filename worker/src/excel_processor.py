@@ -53,7 +53,6 @@ async def read_excel_structure(file_path: str) -> dict:
 def clean_number(value):
     """Очищает строку от неразрывных пробелов и преобразует в число."""
     if isinstance(value, str):
-        # Удаляем неразрывные пробелы и заменяем запятую на точку
         cleaned = value.replace('\u00a0', '').replace(',', '.').strip()
         try:
             return float(cleaned)
@@ -61,35 +60,46 @@ def clean_number(value):
             return value
     return value
 
-async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456") -> dict:
+async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456", output_path: str = None) -> dict:
+    """
+    Применяет маппинг к указанному листу.
+    Если output_path передан, работаем с существующим файлом, иначе создаём новый.
+    """
     try:
-        # 1. Копируем шаблон
-        output_dir = os.path.dirname(template_path)
-        output_filename = f"ДКП_10_-_{month}_{year}.xlsx"
-        output_path = os.path.join(output_dir, output_filename)
-        shutil.copy2(template_path, output_path)
-        logger.info(f"Template copied to {output_path}")
+        # 1. Определяем файл для работы
+        if output_path is None:
+            # Создаём новый файл из шаблона
+            output_dir = os.path.dirname(template_path)
+            output_filename = f"ДКП_10_-_{month}_{year}.xlsx"
+            output_path = os.path.join(output_dir, output_filename)
+            shutil.copy2(template_path, output_path)
+            logger.info(f"Created new output file: {output_path}")
+            
+            # Расшифровка, если есть пароль
+            if password:
+                try:
+                    with open(output_path, 'rb') as f:
+                        file = msoffcrypto.OfficeFile(f)
+                        if file.is_encrypted():
+                            file.load_key(password=password)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                                file.decrypt(tmp)
+                                tmp_path = tmp.name
+                            shutil.move(tmp_path, output_path)
+                            logger.info("File decrypted")
+                except Exception as e:
+                    logger.warning(f"Decrypt failed: {e}")
+        else:
+            # Используем существующий файл
+            if not os.path.exists(output_path):
+                return {"status": "error", "error_message": f"Output file not found: {output_path}"}
+            logger.info(f"Using existing output file: {output_path}")
 
-        # 2. Расшифровка
-        if password:
-            try:
-                with open(output_path, 'rb') as f:
-                    file = msoffcrypto.OfficeFile(f)
-                    if file.is_encrypted():
-                        file.load_key(password=password)
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-                            file.decrypt(tmp)
-                            tmp_path = tmp.name
-                        shutil.move(tmp_path, output_path)
-                        logger.info("File decrypted")
-            except Exception as e:
-                logger.warning(f"Decrypt failed: {e}")
-
-        # 3. Читаем источник (Excel) в DataFrame
+        # 2. Читаем источник (Excel) в DataFrame
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # 4. Применяем фильтры
+        # 3. Применяем фильтры
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
@@ -111,19 +121,18 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
 
-        # 5. Открываем шаблон для записи
+        # 4. Открываем рабочую книгу
         wb = load_workbook(output_path)
         if sheet_name not in wb.sheetnames:
             return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
         ws = wb[sheet_name]
 
-        # 6. Определяем строку с заголовками (используем существующую вторую строку)
+        # 5. Определяем строку с заголовками
         header_row = mapping.get("header_row", 2)
         logger.info(f"Header row: {header_row}")
 
-        # 7. Подготавливаем данные для вставки
+        # 6. Подготавливаем данные для вставки
         source_cols = mapping.get("source_columns", {})
-        # Преобразуем ключи (номера колонок) из строк в целые числа
         source_cols = {int(k): v for k, v in source_cols.items()}
         append = mapping.get("append_to_end", True)
 
@@ -136,7 +145,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 else:
                     if source_expr in df_source.columns:
                         val = row[source_expr]
-                        # Если колонка числовая (по названию) — чистим
                         if any(keyword in source_expr for keyword in ['Сумма', 'Ставка', 'Оклад', 'Премия', 'НДС']):
                             val = clean_number(val)
                         new_row[target_col_idx] = val
@@ -149,9 +157,8 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # 8. Вставляем строки ПОСЛЕ последней существующей строки
+        # 7. Вставляем строки ПОСЛЕ последней существующей строки
         if append:
-            # Находим последнюю строку с любыми данными (по всем колонкам)
             last_row = ws.max_row
             while last_row > 0:
                 row_has_data = False
@@ -163,11 +170,9 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                     break
                 last_row -= 1
             start_row = last_row + 1
-            # Если start_row меньше header_row+1, то данных нет, вставляем после заголовка
             if start_row <= header_row:
                 start_row = header_row + 1
         else:
-            # Если не append, очищаем всё после заголовков
             if ws.max_row > header_row:
                 ws.delete_rows(header_row + 1, ws.max_row - header_row)
             start_row = header_row + 1
@@ -180,7 +185,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
 
-        # 9. Сохраняем книгу (НЕ трогаем таблицы и автофильтр)
+        # 8. Сохраняем книгу
         wb.save(output_path)
         logger.info(f"File saved: {output_path}")
 

@@ -75,10 +75,11 @@ async def call_tool(request: ToolRequest):
             month = request.arguments["month"]
             year = request.arguments["year"]
             password = request.arguments.get("password", "987456")
-            result = await apply_sheet_mapping(source_path, template_path, sheet_name, mapping, month, year, password)
+            output_path = request.arguments.get("output_path")  # добавляем
+            result = await apply_sheet_mapping(source_path, template_path, sheet_name, mapping, month, year, password, output_path)
             if result.get("status") == "error":
                 return ToolResponse(status="error", error_message=result.get("error_message"))
-            return ToolResponse(status="success", result={"output_path": result["output_path"]})
+            return ToolResponse(status="success", result={"output_path": result["output_path"], "rows_added": result.get("rows_added")})
         
         elif request.tool == "read_excel_structure":
             file_path = request.arguments["file_path"]
