@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 from src.handlers import register_handlers
 
+from src.api import router as internal_router
+app.include_router(internal_router)
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)

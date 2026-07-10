@@ -47,11 +47,11 @@ async def call_tool(request: ToolRequest):
         elif request.tool == "filter_mxl_data":
             file_path = request.arguments["file_path"]
             filters = request.arguments.get("filters", {})
+            limit = request.arguments.get("limit", 1000)  # ограничение на количество строк
             parsed = await parse_mxl(file_path)
             if parsed.get("status") == "error":
                 return ToolResponse(status="error", error_message=parsed.get("error_message"))
             data = parsed["result"]["data"]
-            # Применяем фильтры: фильтр может быть строкой или списком
             filtered = data
             for col, value in filters.items():
                 if value is None:
@@ -60,9 +60,14 @@ async def call_tool(request: ToolRequest):
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
                     filtered = [row for row in filtered if row.get(col) == value]
+            total_filtered = len(filtered)
+            if total_filtered > limit:
+                filtered = filtered[:limit]
             return ToolResponse(status="success", result={
                 "filtered_data": filtered,
-                "count": len(filtered)
+                "count": total_filtered,
+                "limited": total_filtered > limit,
+                "limit": limit
             })
         
         elif request.tool == "write_excel":

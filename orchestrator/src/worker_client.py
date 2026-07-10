@@ -12,7 +12,7 @@ class WorkerClient:
     async def call_tool(self, tool: str, arguments: dict) -> dict:
         url = f"{self.worker_url}/api/v1/tool"
         payload = {"tool": tool, "arguments": arguments}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             return resp.json()
