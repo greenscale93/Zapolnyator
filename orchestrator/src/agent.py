@@ -35,24 +35,61 @@ class OrchestratorAgent:
             return "Инструкция не загружена."
 
     async def _send_telegram_message(self, user_id: int, text: str, file_path: str = None):
+        """Отправляет сообщение и опционально файл в Telegram с подробным логированием."""
         if not self.bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN not set")
             return
+        
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {"chat_id": user_id, "text": text, "parse_mode": "HTML"}
+        
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(url, json=payload)
-            if file_path and os.path.exists(file_path):
-                with open(file_path, 'rb') as f:
-                    files = {'document': (os.path.basename(file_path), f, 'text/plain')}
-                    await client.post(
-                        f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
-                        data={'chat_id': user_id},
-                        files=files
-                    )
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Отправляем текстовое сообщение
+                msg_resp = await client.post(url, json=payload)
+                msg_resp.raise_for_status()
+                logger.info(f"Message sent to user {user_id}")
+
+                # Если есть файл — отправляем
+                if file_path:
+                    if os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path)
+                        logger.info(f"Sending file: {file_path} ({file_size} bytes)")
+                        
+                        # Проверяем размер (Telegram limit 50 MB)
+                        if file_size > 50 * 1024 * 1024:
+                            await client.post(url, json={
+                                "chat_id": user_id,
+                                "text": f"⚠️ Файл слишком большой ({file_size} байт). Отправка невозможна."
+                            })
+                            return
+                        
+                        with open(file_path, 'rb') as f:
+                            files = {'document': (os.path.basename(file_path), f, 'text/plain')}
+                            doc_resp = await client.post(
+                                f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
+                                data={'chat_id': user_id},
+                                files=files
+                            )
+                            doc_resp.raise_for_status()
+                            logger.info(f"File sent successfully: {file_path}")
+                    else:
+                        logger.error(f"File not found: {file_path}")
+                        await client.post(url, json={
+                            "chat_id": user_id,
+                            "text": f"❌ Файл не найден: {file_path}"
+                        })
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
+            # Пытаемся отправить сообщение об ошибке
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(url, json={
+                        "chat_id": user_id,
+                        "text": f"❌ Ошибка отправки: {str(e)[:200]}"
+                    })
+            except:
+                pass
 
     async def _save_debug_data(self, data, prefix: str) -> str:
         fd, path = tempfile.mkstemp(suffix='.txt', prefix=f"{prefix}_")
@@ -61,12 +98,11 @@ class OrchestratorAgent:
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
             else:
                 f.write(str(data))
+        logger.info(f"Debug data saved to {path} ({os.path.getsize(path)} bytes)")
         return path
 
     def _sanitize_for_json(self, obj):
-        """Рекурсивно удаляет управляющие символы из строк."""
         if isinstance(obj, str):
-            # Удаляем управляющие символы, кроме табуляции и перевода строки
             return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', obj)
         elif isinstance(obj, dict):
             return {self._sanitize_for_json(k): self._sanitize_for_json(v) for k, v in obj.items()}
@@ -144,16 +180,13 @@ class OrchestratorAgent:
 
 Порядок действий:
 1. Определи соответствие колонок (ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д.). Если неясно — задай вопрос через ask_user.
-2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО. Для этого сделай ОДИН вызов filter_mxl_data с фильтрами: 
-   {{ "Сценарий": "ФАКТ", "Подразделение": ["!ГКП 10.6 (Емельянова)"] }} (пока не поддерживается "не равно", поэтому фильтруй по наличию подстроки).
-   Лучше сначала получить все данные с фильтром по Сценарию, а затем в коде отсеять.
-   Рекомендую: сделать несколько вызовов filter_mxl_data с фильтром по ТипЗаписи для каждого типа (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ) — это даст небольшие ответы.
+2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО. Для этого сделай ОДИН вызов filter_mxl_data с фильтрами, либо несколько по типам записей.
 3. Обработай каждый тип согласно инструкции.
 4. Сформируй структуру для записи в Excel (словарь лист->список строк).
 5. Вызови write_excel.
 6. Вычисли показатели.
 
-Важно: НЕ ДЕЛАЙ МНОГО ВЫЗОВОВ ОДНОГО И ТОГО ЖЕ. Используй filter_mxl_data только для получения данных по типам записей.
+Важно: НЕ ДЕЛАЙ МНОГО ВЫЗОВОВ ОДНОГО И ТОГО ЖЕ. Используй filter_mxl_data только для получения данных по типам записей (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ).
 """
 
         # Сохраняем промпт в файл для утверждения
@@ -181,18 +214,15 @@ class OrchestratorAgent:
         logger.info(f"Task {task_id} waiting for approval")
 
     async def approve_llm_request(self, task_id: str):
-        """Пользователь одобрил запрос к LLM."""
         if task_id not in self.pending_approval:
             return
         pending = self.pending_approval.pop(task_id)
         user_id = pending["user_id"]
         history = pending["history"]
         await self._send_telegram_message(user_id, "✅ Запрос к LLM одобрен. Начинаю обработку...")
-        # Запускаем цикл с историей
         await self._run_llm_cycle(task_id, history, user_id)
 
     async def cancel_llm_request(self, task_id: str):
-        """Пользователь отменил запрос к LLM."""
         if task_id in self.pending_approval:
             pending = self.pending_approval.pop(task_id)
             user_id = pending["user_id"]
@@ -203,7 +233,6 @@ class OrchestratorAgent:
             })
 
     async def _run_llm_cycle(self, task_id: str, history: list, user_id: int):
-        """Цикл взаимодействия с LLM после утверждения."""
         max_iterations = 15
         iteration = 0
         total_tokens = 0
@@ -233,13 +262,12 @@ class OrchestratorAgent:
                         }
                     }
                 ]
-                # Проверка размера истории
                 history_str = json.dumps(history, ensure_ascii=False, default=str)
                 if len(history_str) > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
                     await self._send_telegram_message(user_id, f"⚠️ История слишком большая. Сохранена в файл.", file_path=debug_file)
                     history = [history[0]] + history[-3:]
-                # Отправляем запрос
+                
                 response = await self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=history,
@@ -272,7 +300,6 @@ class OrchestratorAgent:
                                 })
                                 return
                             else:
-                                # Логируем фильтры, если есть
                                 if tool_name == "filter_mxl_data" and "filters" in tool_args:
                                     filters = tool_args["filters"]
                                     await self._send_telegram_message(user_id, f"⚙️ filter_mxl_data с фильтрами: {filters}")
@@ -283,14 +310,11 @@ class OrchestratorAgent:
                                     await self._send_telegram_message(user_id, f"❌ Ошибка {tool_name}: {result.get('error_message')}")
                                 else:
                                     await self._send_telegram_message(user_id, f"✅ {tool_name} выполнен успешно.")
-                                # Очищаем результат от управляющих символов
                                 result = self._sanitize_for_json(result)
                                 result_str = json.dumps(result, ensure_ascii=False, default=str)
-                                # Проверяем размер
                                 if len(result_str) > 3000000:
                                     debug_file = await self._save_debug_data(result, f"{tool_name}_result")
                                     await self._send_telegram_message(user_id, f"📦 Результат {tool_name} большой ({len(result_str)} символов). Сохранён в файл.", file_path=debug_file)
-                                    # Обрезаем для LLM
                                     if "filtered_data" in result.get("result", {}):
                                         data = result["result"]["filtered_data"]
                                         truncated = data[:100] if isinstance(data, list) else data
@@ -327,7 +351,6 @@ class OrchestratorAgent:
                                 await self._send_telegram_message(user_id, f"❌ Ошибка: {result.get('error_message')}")
                                 return
                         except json.JSONDecodeError:
-                            # Если не JSON — считаем текстовым ответом
                             await self._send_telegram_message(user_id, f"🤖 {content[:500]}...")
                             await self.session_manager.update_session(task_id, {
                                 "status": "waiting_question",
@@ -362,11 +385,9 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, f"📥 Ответ получен: {answer[:100]}...")
             await self._run_llm_cycle(task_id, history, user_id)
         elif status == "waiting_llm_approval":
-            # Обрабатываем команды через отдельный метод
             pass  # handled by commands
 
     async def stop_task(self, task_id: str):
-        """Принудительная остановка задачи."""
         if task_id in self.pending_approval:
             await self.cancel_llm_request(task_id)
         await self.session_manager.update_session(task_id, {
