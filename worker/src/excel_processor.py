@@ -61,87 +61,83 @@ def clean_number(value):
             return value
     return value
 
-# ========== НОВАЯ ФУНКЦИЯ ДЛЯ ВЗАИМОРАСЧЕТОВ ==========
+# ========== ФУНКЦИЯ ДЛЯ ВЗАИМОРАСЧЕТОВ ==========
 
 def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     Предобработка данных для листа 'Взаиморасчеты':
-    - вычисление направления (Доход -> Исходящие, Расход -> Входящие)
+    - вычисление направления (из поля direction_field, по умолчанию 'Направление') 
+      Доход -> Исходящие, Расход -> Входящие
     - обработка спецофисов: строки с ключевым словом в ПодразделениеКонтрагентДляОтчета
-      (заполненные) делятся по БДР/БДДС на "по актам" и "по ДС"
-    - пустые ПодразделениеКонтрагентДляОтчета заполняются по тому же правилу,
+      делятся по ТипОборота (БДР/БДДС) на "по актам" и "по ДС"
+    - пустые ПодразделениеКонтрагентДляОтчета заполняются аналогично спецофисам,
       если задан ПодразделениеКонтрагент
-    - схлопывание дублей БДР/БДДС для всех строк, НЕ содержащих ключевое слово
+    - схлопывание дублей БДР/БДДС для строк, НЕ содержащих ключевое слово
     """
-    # Вычисляем направление
+    direction_field = config.get("direction_field", "Направление")
+    turnover_field = config.get("turnover_type_field", "ТипОборота")
+    
     dir_map = config.get("direction_mapping", {})
-    df["Направление"] = df["ТипОборота"].map(dir_map)
-    unmapped = df[df["Направление"].isna()]["ТипОборота"].unique()
+    df["Направление"] = df[direction_field].map(dir_map)
+    unmapped = df[df["Направление"].isna()][direction_field].unique()
     if len(unmapped) > 0:
-        raise ValueError(f"Не удалось определить направление для типов оборота: {list(unmapped)}")
+        raise ValueError(f"Не удалось определить направление для значений {list(unmapped)} в поле '{direction_field}'")
 
     office_col = "ПодразделениеКонтрагентДляОтчета"
     keyword = config.get("special_office_keyword", "")
     replace_rules = config.get("special_office_replace", {})
 
-    # Проверим наличие необходимых колонок
-    if "ВидОборота" not in df.columns:
-        raise ValueError("Для обработки Взаиморасчетов нужна колонка 'ВидОборота'")
+    if turnover_field not in df.columns:
+        raise ValueError(f"Для обработки Взаиморасчетов нужна колонка '{turnover_field}'")
     if "ПодразделениеКонтрагент" not in df.columns:
         raise ValueError("Для обработки Взаиморасчетов нужна колонка 'ПодразделениеКонтрагент'")
 
-    # 1. Обработка строк, где уже заполнен office_col и содержит ключевое слово
+    # 1. Заполненные спецофисы (содержат ключевое слово) – разделяем по БДР/БДДС
     mask_special_filled = df[office_col].astype(str).str.contains(keyword, na=False)
     if mask_special_filled.any():
-        df.loc[mask_special_filled, office_col] = df.loc[mask_special_filled, "ВидОборота"].map(replace_rules)
-        # Проверим, что все ВидОборота замапились
+        df.loc[mask_special_filled, office_col] = df.loc[mask_special_filled, turnover_field].map(replace_rules)
         still_na = df.loc[mask_special_filled, office_col].isna()
         if still_na.any():
-            bad_vals = df.loc[mask_special_filled & still_na, "ВидОборота"].unique()
-            raise ValueError(f"Для спецофиса не задана замена для ВидОборота: {list(bad_vals)}")
+            bad_vals = df.loc[mask_special_filled & still_na, turnover_field].unique()
+            raise ValueError(f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}")
 
-    # 2. Обработка строк с пустым office_col
+    # 2. Пустые office_col – заполняем по тому же принципу (из ПодразделениеКонтрагент)
     mask_empty = df[office_col].isna() | (df[office_col].astype(str).str.strip() == "")
     if mask_empty.any():
-        # Проверяем наличие ПодразделениеКонтрагент
         sub_office_col = "ПодразделениеКонтрагент"
         empty_without_sub = mask_empty & (df[sub_office_col].isna() | (df[sub_office_col].astype(str).str.strip() == ""))
         if empty_without_sub.any():
             problem_idx = df[empty_without_sub].index.tolist()
             raise ValueError(f"Пустой office_col и пустой ПодразделениеКонтрагент в строках: {problem_idx}")
-        # Заполняем по тому же принципу, что и спецофисы
-        vid = df.loc[mask_empty, "ВидОборота"]
+        vid = df.loc[mask_empty, turnover_field]
         valid_vids = list(replace_rules.keys())
         invalid_vids = vid[~vid.isin(valid_vids)]
         if not invalid_vids.empty:
-            raise ValueError(f"Некорректный ВидОборота для пустых офисов: {invalid_vids.unique()}")
+            raise ValueError(f"Некорректный {turnover_field} для пустых офисов: {invalid_vids.unique()}")
         df.loc[mask_empty, office_col] = vid.map(replace_rules)
 
-    # 3. Определяем, какие строки являются спецофисами (содержат keyword) — они не будут схлопываться
+    # 3. Схлопывание для обычных офисов (не содержащих keyword)
     is_special = df[office_col].astype(str).str.contains(keyword, na=False)
     df_special = df[is_special].copy()
     df_regular = df[~is_special].copy()
 
-    # 4. Схлопываем обычные строки (убираем дубли БДР/БДДС)
     if not df_regular.empty:
         group_keys = ["Подразделение", "Контрагент", "Проект", office_col, "Направление"]
         df_regular = df_regular.groupby(group_keys, as_index=False).first()
-        # Удалим ставшие ненужными колонки
-        for col in ["ВидОборота", "ТипОборота", "ПодразделениеКонтрагент"]:
+        for col in [turnover_field, direction_field, "ПодразделениеКонтрагент"]:
             if col in df_regular.columns:
                 df_regular.drop(columns=[col], inplace=True)
 
-    # Объединяем
     df = pd.concat([df_regular, df_special], ignore_index=True)
 
-    # Удаляем лишние столбцы, которые не участвуют в маппинге
-    cols_to_drop = [c for c in ["ТипОборота", "ВидОборота", "ПодразделениеКонтрагент"] if c in df.columns]
+    # Убираем ставшие ненужными колонки
+    cols_to_drop = [c for c in [direction_field, turnover_field, "ПодразделениеКонтрагент"] if c in df.columns]
     if cols_to_drop:
         df.drop(columns=cols_to_drop, inplace=True)
 
     return df
 
-# ========== ОСНОВНАЯ ФУНКЦИЯ (ОБНОВЛЁННАЯ) ==========
+# ========== ОСНОВНАЯ ФУНКЦИЯ ==========
 
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456", output_path: str = None) -> dict:
     try:
@@ -174,7 +170,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # Очистка "денежных" колонок от пробелов и запятых до фильтрации и группировки
         money_keywords = ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']
         for col in df_source.columns:
             if any(kw in col for kw in money_keywords):
@@ -186,11 +181,10 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 )
                 df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
 
-        # ======== ФИЛЬТРЫ ========
+        # ======== ФИЛЬТРЫ (включая списки) ========
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
-        # Поддержка списков в exclude_filters
         if exclude_filters:
             for col, val in exclude_filters.items():
                 if col in df_source.columns:
@@ -206,15 +200,19 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if filters:
             for col, val in filters.items():
                 if col in df_source.columns:
-                    df_source = df_source[df_source[col].astype(str) == str(val)]
-                    logger.info(f"Applied filter {col} = {val}, rows left: {len(df_source)}")
+                    if isinstance(val, list):
+                        df_source = df_source[df_source[col].astype(str).isin([str(v) for v in val])]
+                        logger.info(f"Applied filter {col} IN {val}, rows left: {len(df_source)}")
+                    else:
+                        df_source = df_source[df_source[col].astype(str) == str(val)]
+                        logger.info(f"Applied filter {col} = {val}, rows left: {len(df_source)}")
                 else:
                     logger.warning(f"Filter column '{col}' not found in source")
 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
 
-        # ======== КАСТОМНАЯ ОБРАБОТКА (ВЗАИМОРАСЧЕТЫ) ========
+        # ======== КАСТОМНАЯ ОБРАБОТКА ========
         custom = mapping.get("custom_processing")
         if custom and custom.get("type") == "vzaimoraschety":
             df_source = _preprocess_vzaimoraschety(df_source, custom)
@@ -234,7 +232,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
             if df_source.empty:
                 return {"status": "error", "error_message": "No data after applying view filters"}
 
-        # ======== ГРУППИРОВКА И АГРЕГАЦИЯ (для ФОТ и др.) ========
+        # ======== ГРУППИРОВКА И АГРЕГАЦИЯ ========
         group_by = mapping.get("group_by")
         aggregations = mapping.get("aggregations", {})
 

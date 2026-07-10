@@ -90,13 +90,14 @@
       "append_to_end": true,
       "header_row": 2,
       "filters": {
-        "ТипЗаписи": "Взаиморасчет"
+        "ТипЗаписи": "Взаиморасчет",
+        "Направление": ["Доход", "Расход"]
       },
-      "exclude_filters": {
-        "ТипОборота": ["Доход ВГО", "Расход ВГО"]
-      },
+      "exclude_filters": {},
       "custom_processing": {
         "type": "vzaimoraschety",
+        "direction_field": "Направление",
+        "turnover_type_field": "ТипОборота",
         "direction_mapping": {
           "Доход": "Исходящие",
           "Расход": "Входящие"
