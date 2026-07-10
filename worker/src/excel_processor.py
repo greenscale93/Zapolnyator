@@ -63,22 +63,20 @@ def clean_number(value):
 
 # ========== ФУНКЦИЯ ДЛЯ ВЗАИМОРАСЧЕТОВ ==========
 
-def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict, office_mapping: dict = None) -> pd.DataFrame:
     """
     Предобработка данных для листа 'Взаиморасчеты':
     - вычисление направления (из поля direction_field, по умолчанию 'Направление') 
       Доход -> Исходящие, Расход -> Входящие
     - обработка спецофисов: строки с ключевым словом в ПодразделениеКонтрагентДляОтчета
       делятся по ТипОборота (БДР/БДДС) на "по актам" и "по ДС"
-    - пустые ПодразделениеКонтрагентДляОтчета заполняются аналогично спецофисам,
-      если задан ПодразделениеКонтрагент
+    - пустые ПодразделениеКонтрагентДляОтчета заполняются из office_mapping или спецофисной заменой
     - схлопывание дублей БДР/БДДС для строк, НЕ содержащих ключевое слово
     """
     direction_field = config.get("direction_field", "Направление")
     turnover_field = config.get("turnover_type_field", "ТипОборота")
     
     dir_map = config.get("direction_mapping", {})
-    # Создаём новую колонку с вычисленным направлением (перезаписываем direction_field)
     df["Направление"] = df[direction_field].map(dir_map)
     unmapped = df[df["Направление"].isna()][direction_field].unique()
     if len(unmapped) > 0:
@@ -102,20 +100,25 @@ def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
             bad_vals = df.loc[mask_special_filled & still_na, turnover_field].unique()
             raise ValueError(f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}")
 
-    # 2. Пустые office_col – заполняем по тому же принципу (из ПодразделениеКонтрагент)
+    # 2. Пустые office_col – заполняем из словаря маппинга или заменой по ТипОборота
     mask_empty = df[office_col].isna() | (df[office_col].astype(str).str.strip() == "")
     if mask_empty.any():
         sub_office_col = "ПодразделениеКонтрагент"
-        empty_without_sub = mask_empty & (df[sub_office_col].isna() | (df[sub_office_col].astype(str).str.strip() == ""))
-        if empty_without_sub.any():
-            problem_idx = df[empty_without_sub].index.tolist()
-            raise ValueError(f"Пустой office_col и пустой ПодразделениеКонтрагент в строках: {problem_idx}")
-        vid = df.loc[mask_empty, turnover_field]
-        valid_vids = list(replace_rules.keys())
-        invalid_vids = vid[~vid.isin(valid_vids)]
-        if not invalid_vids.empty:
-            raise ValueError(f"Некорректный {turnover_field} для пустых офисов: {invalid_vids.unique()}")
-        df.loc[mask_empty, office_col] = vid.map(replace_rules)
+        if office_mapping is None:
+            office_mapping = {}
+        for idx in df[mask_empty].index:
+            sub = df.loc[idx, sub_office_col]
+            if pd.isna(sub) or str(sub).strip() == "":
+                raise ValueError(f"Пустой ПодразделениеКонтрагент в строке {idx}")
+            sub_str = str(sub).strip()
+            mapped = office_mapping.get(sub_str)
+            if mapped:
+                df.loc[idx, office_col] = mapped
+            else:
+                # fallback: используем спецофисную замену по ТипОборота (БДР/БДДС)
+                fallback = replace_rules.get(df.loc[idx, turnover_field], "Неизвестно")
+                df.loc[idx, office_col] = fallback
+                logger.warning(f"Не найден маппинг для '{sub_str}', использован fallback {fallback}")
 
     # 3. Схлопывание для обычных офисов (не содержащих keyword)
     is_special = df[office_col].astype(str).str.contains(keyword, na=False)
@@ -125,16 +128,13 @@ def _preprocess_vzaimoraschety(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     if not df_regular.empty:
         group_keys = ["Подразделение", "Контрагент", "Проект", office_col, "Направление"]
         df_regular = df_regular.groupby(group_keys, as_index=False).first()
-        # Удаляем служебные колонки, которые больше не нужны
         for col in [turnover_field, "ПодразделениеКонтрагент"]:
             if col in df_regular.columns:
                 df_regular.drop(columns=[col], inplace=True)
 
     df = pd.concat([df_regular, df_special], ignore_index=True)
 
-    # Убираем оставшиеся служебные колонки, но НЕ трогаем "Направление" (direction_field)
     cols_to_drop = [c for c in [turnover_field, "ПодразделениеКонтрагент"] if c in df.columns]
-    # Также удаляем исходный direction_field только если он отличается от "Направление"
     if direction_field != "Направление" and direction_field in df.columns:
         cols_to_drop.append(direction_field)
     if cols_to_drop:
@@ -175,8 +175,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # Очистка денежных колонок: убираем неразрывные пробелы, запятые, превращаем в числа.
-        # СтавкаНДС исключается, т.к. может содержать проценты или текст "Без НДС".
         money_keywords = ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']
         for col in df_source.columns:
             if col == "СтавкаНДС":
@@ -224,7 +222,8 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         # ======== КАСТОМНАЯ ОБРАБОТКА (ВЗАИМОРАСЧЕТЫ) ========
         custom = mapping.get("custom_processing")
         if custom and custom.get("type") == "vzaimoraschety":
-            df_source = _preprocess_vzaimoraschety(df_source, custom)
+            office_mapping = custom.get("office_mapping", {})
+            df_source = _preprocess_vzaimoraschety(df_source, custom, office_mapping)
 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after custom processing"}
@@ -313,7 +312,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 else:
                     if source_expr in row_dict:
                         val = row_dict[source_expr]
-                        # clean_number только для денежных колонок
                         if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']) and source_expr != "СтавкаНДС":
                             val = clean_number(val)
                         new_row[target_col_idx] = val

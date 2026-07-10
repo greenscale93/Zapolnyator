@@ -75,7 +75,7 @@ async def call_tool(request: ToolRequest):
             month = request.arguments["month"]
             year = request.arguments["year"]
             password = request.arguments.get("password", "987456")
-            output_path = request.arguments.get("output_path")  # добавляем
+            output_path = request.arguments.get("output_path")
             result = await apply_sheet_mapping(source_path, template_path, sheet_name, mapping, month, year, password, output_path)
             if result.get("status") == "error":
                 return ToolResponse(status="error", error_message=result.get("error_message"))
@@ -87,6 +87,23 @@ async def call_tool(request: ToolRequest):
             if result.get("status") == "error":
                 return ToolResponse(status="error", error_message=result.get("error_message"))
             return ToolResponse(status="success", result=result.get("result"))
+
+        elif request.tool == "read_vz_empty_contractors":
+            source_path = request.arguments["source_path"]
+            if not os.path.exists(source_path):
+                return ToolResponse(status="error", error_message=f"Source file not found: {source_path}")
+            try:
+                df = pd.read_excel(source_path, header=0)
+                # Фильтр: только строки Взаиморасчет и направления Доход/Расход
+                mask = (df["ТипЗаписи"].astype(str) == "Взаиморасчет") & (df["Направление"].astype(str).isin(["Доход", "Расход"]))
+                df_vz = df[mask]
+                # Пустые ПодразделениеКонтрагентДляОтчета
+                empty_mask = df_vz["ПодразделениеКонтрагентДляОтчета"].isna() | (df_vz["ПодразделениеКонтрагентДляОтчета"].astype(str).str.strip() == "")
+                contractors = df_vz.loc[empty_mask, "ПодразделениеКонтрагент"].dropna().unique().tolist()
+                return ToolResponse(status="success", result={"contractors": contractors})
+            except Exception as e:
+                logger.exception("read_vz_empty_contractors error")
+                return ToolResponse(status="error", error_message=str(e))
         
         else:
             return ToolResponse(status="error", error_message=f"Unknown tool: {request.tool}")

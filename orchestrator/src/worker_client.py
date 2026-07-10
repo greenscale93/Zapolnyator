@@ -1,23 +1,25 @@
 import httpx
 import os
-import logging
-import json
+from typing import Any, Dict
 
-logger = logging.getLogger(__name__)
+WORKER_URL = os.getenv("WORKER_URL", "http://worker:8000")
 
 class WorkerClient:
-    def __init__(self):
-        self.worker_url = os.getenv("WORKER_URL", "http://worker:8000")
-        self.timeout = 120.0
-
-    async def call_tool(self, tool: str, arguments: dict) -> dict:
-        url = f"{self.worker_url}/api/v1/tool"
-        payload = {"tool": tool, "arguments": arguments}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload)
+    async def call_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{WORKER_URL}/tools/{tool_name}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=params)
             resp.raise_for_status()
-            try:
-                return resp.json()
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON response from worker: {resp.text[:200]}")
-                return {"status": "error", "error_message": f"Invalid JSON response: {e}"}
+            return resp.json()
+
+    async def read_excel_structure(self, file_path: str) -> Dict[str, Any]:
+        return await self.call_tool("read_excel_structure", {"file_path": file_path})
+
+    async def apply_sheet_mapping(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        return await self.call_tool("apply_sheet_mapping", params)
+
+    async def get_empty_vz_contractors(self, source_path: str) -> list:
+        resp = await self.call_tool("read_vz_empty_contractors", {"source_path": source_path})
+        if resp.get("status") == "success":
+            return resp["result"]["contractors"]
+        raise Exception(resp.get("error_message", "Unknown error"))

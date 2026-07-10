@@ -1,13 +1,14 @@
-import logging
+import uvicorn
 from fastapi import FastAPI
 from src.api import router
+from src.mapping_store import init_db
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Orchestrator")
+app = FastAPI()
 app.include_router(router)
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.on_event("startup")
+async def startup():
+    init_db()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

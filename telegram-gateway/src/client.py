@@ -65,3 +65,13 @@ class OrchestratorClient:
     async def set_autotest_status(self, user_id: int, enabled: bool):
         url = f"{self.base_url}/api/v1/autotest/toggle/{user_id}"
         await self._request_with_retry("POST", url)
+        
+    async def edit_mapping(self, user_id: int):
+        url = f"{self.base_url}/api/v1/edit_mapping"
+        payload = {"user_id": user_id}
+        return await self._request_with_retry("POST", url, json=payload)
+
+    async def delete_mapping(self, task_id: str, contractor: str):
+        url = f"{self.base_url}/api/v1/delete_mapping"
+        payload = {"task_id": task_id, "contractor": contractor}
+        return await self._request_with_retry("POST", url, json=payload)
