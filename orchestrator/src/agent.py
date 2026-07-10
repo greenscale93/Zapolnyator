@@ -5,6 +5,7 @@ import asyncio
 import httpx
 import tempfile
 import re
+import csv
 from openai import AsyncOpenAI
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
@@ -23,7 +24,7 @@ class OrchestratorAgent:
         )
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.instruction = self._load_instruction()
-        self.pending_approval = {}  # task_id -> {prompt_file, history, user_id}
+        self.pending_approval = {}
         logger.info("OrchestratorAgent initialized")
 
     def _load_instruction(self) -> str:
@@ -99,7 +100,7 @@ class OrchestratorAgent:
         month = state.get("month", "Май")
         year = state.get("year", 2026)
 
-        # 1. Читаем данные (Excel или MXL)
+        # 1. Читаем данные и создаём CSV для фильтрации
         if data_file_path.lower().endswith(('.xlsx', '.xls')):
             await self._send_telegram_message(user_id, "📊 Читаю данные из Excel...")
             read_result = await self.worker_client.call_tool("read_excel_data", {"file_path": data_file_path})
@@ -110,8 +111,15 @@ class OrchestratorAgent:
             data = read_result["result"]["data"]
             columns = read_result["result"]["columns"]
             total_rows = read_result["result"]["rows"]
-            data_source = "Excel"
-            data_path_for_tool = data_file_path
+            # Сохраняем в CSV для filter_mxl_data
+            csv_path = data_file_path + ".temp.csv"
+            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(data)
+            data_path_for_tool = csv_path
+            data_source = "Excel (преобразован в CSV)"
+            await self._send_telegram_message(user_id, f"📄 Excel прочитан ({total_rows} строк), сохранён как CSV для фильтрации.")
         else:
             # MXL — конвертируем в CSV
             await self._send_telegram_message(user_id, "🔄 Конвертирую MXL в CSV...")
@@ -131,7 +139,7 @@ class OrchestratorAgent:
                 file_path=csv_path
             )
 
-        # 2. Читаем структуру Excel-шаблона
+        # 2. Читаем структуру Excel (только один раз)
         await self._send_telegram_message(user_id, "🔍 Читаю структуру Excel...")
         excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": excel_path})
         if excel_struct.get("status") == "error":
@@ -139,13 +147,13 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {excel_struct.get('error_message')}")
             return
 
-        # 3. Формируем системный промпт
+        # 3. Формируем системный промпт с чёткими инструкциями
         system_prompt = f"""
 Ты — ИИ-агент, который заполняет отчёт ДКП по данным из выгрузки.
 Источник данных: {data_source}.
 Колонки: {columns}
 Всего строк: {total_rows}
-Данные доступны по пути: {data_path_for_tool}
+Данные доступны по пути (используй его для filter_mxl_data): {data_path_for_tool}
 Excel-шаблон: {excel_path}
 Месяц: {month}, год: {year}.
 
@@ -155,23 +163,26 @@ Excel-шаблон: {excel_path}
 Ты можешь использовать инструменты:
 - filter_mxl_data(file_path, filters) — фильтрует данные по колонкам. file_path = {data_path_for_tool}. filters — словарь с колонками и значениями.
 - write_excel(template_path, sheets_data, password, output_path) — записывает данные в Excel.
-- read_excel_structure — уже вызван.
+
+ВАЖНО: 
+1. НЕ вызывай read_excel_structure — он уже вызван. Структура Excel у тебя есть, используй её.
+2. Если filter_mxl_data возвращает 0 строк для какого-то типа — значит, таких записей нет, просто пропусти этот тип.
+3. Для каждого типа записи (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ) делай ОДИН вызов filter_mxl_data с фильтром по ТипЗаписи.
+4. После получения данных обработай их согласно инструкции и сформируй sheets_data для write_excel.
+5. Верни JSON с ключами "status": "success", "output_path": "/path/to/result.xlsx", "metrics": {{...}}.
 
 Порядок действий:
-1. Определи соответствие колонок (ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д.).
-2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО.
-   Делай ОТДЕЛЬНЫЕ ВЫЗОВЫ filter_mxl_data для каждого типа записи:
-   - {{"ТипЗаписи": "Реализация", "Сценарий": "ФАКТ"}}
-   - {{"ТипЗаписи": "Оплата", "Сценарий": "ФАКТ"}}
-   - {{"ТипЗаписи": "Взаиморасчет", "Сценарий": "ФАКТ"}}
-   - {{"ТипЗаписи": "НачислениеЗарплаты", "Сценарий": "ФАКТ"}}
-   - {{"ТипЗаписи": "ФактическийФОТ", "Сценарий": "ФАКТ"}}
-3. Обработай каждый тип согласно инструкции.
-4. Сформируй структуру для записи в Excel (словарь лист->список строк).
-5. Вызови write_excel.
-6. Вычисли показатели.
+1. Вызови filter_mxl_data с {{"ТипЗаписи": "Реализация", "Сценарий": "ФАКТ"}} — получи данные.
+2. Вызови filter_mxl_data с {{"ТипЗаписи": "Оплата", "Сценарий": "ФАКТ"}}.
+3. Вызови filter_mxl_data с {{"ТипЗаписи": "Взаиморасчет", "Сценарий": "ФАКТ"}}.
+4. Вызови filter_mxl_data с {{"ТипЗаписи": "НачислениеЗарплаты", "Сценарий": "ФАКТ"}}.
+5. Вызови filter_mxl_data с {{"ТипЗаписи": "ФактическийФОТ", "Сценарий": "ФАКТ"}}.
+6. Обработай каждый тип согласно инструкции (группировки, преобразования).
+7. Сформируй sheets_data (словарь с ключами: "Реализация", "ДС", "ФОТ", "Взаиморасчеты").
+8. Вызови write_excel с template_path={excel_path}, sheets_data=..., password="987456".
+9. Верни результат.
 
-НЕ ДЕЛАЙ ЛИШНИХ ВЫЗОВОВ. Используй filter_mxl_data только для получения данных по типам.
+Не делай лишних вызовов. Если данные отсутствуют, просто пропускай шаг.
 """
 
         # Сохраняем промпт в файл для утверждения
@@ -198,9 +209,7 @@ Excel-шаблон: {excel_path}
         logger.info(f"Task {task_id} waiting for approval")
 
     async def approve_llm_request(self, task_id: str):
-        logger.info(f"Approving LLM request for task {task_id}")
         if task_id not in self.pending_approval:
-            logger.warning(f"Task {task_id} not found in pending_approval")
             return
         pending = self.pending_approval.pop(task_id)
         user_id = pending["user_id"]
@@ -209,7 +218,6 @@ Excel-шаблон: {excel_path}
         await self._run_llm_cycle(task_id, history, user_id)
 
     async def cancel_llm_request(self, task_id: str):
-        logger.info(f"Cancelling LLM request for task {task_id}")
         if task_id in self.pending_approval:
             pending = self.pending_approval.pop(task_id)
             user_id = pending["user_id"]
@@ -220,8 +228,7 @@ Excel-шаблон: {excel_path}
             })
 
     async def _run_llm_cycle(self, task_id: str, history: list, user_id: int):
-        logger.info(f"Starting LLM cycle for task {task_id}")
-        max_iterations = 15
+        max_iterations = 10
         iteration = 0
         total_tokens = 0
         while iteration < max_iterations:
@@ -238,7 +245,7 @@ Excel-шаблон: {excel_path}
                                 "properties": {
                                     "tool": {
                                         "type": "string",
-                                        "enum": ["filter_mxl_data", "write_excel", "read_excel_structure", "ask_user"]
+                                        "enum": ["filter_mxl_data", "write_excel", "ask_user"]
                                     },
                                     "arguments": {
                                         "type": "object",
@@ -250,6 +257,7 @@ Excel-шаблон: {excel_path}
                         }
                     }
                 ]
+                # Проверка размера истории
                 history_str = json.dumps(history, ensure_ascii=False, default=str)
                 if len(history_str) > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
@@ -377,13 +385,13 @@ Excel-шаблон: {excel_path}
             pass
 
     async def stop_task(self, task_id: str):
-        logger.info(f"Stopping task {task_id}")
         if task_id in self.pending_approval:
             await self.cancel_llm_request(task_id)
         await self.session_manager.update_session(task_id, {
             "status": "cancelled",
             "error": "Остановлено пользователем"
         })
+        logger.info(f"Task {task_id} stopped by user")
 
     async def _set_error(self, task_id: str, error_message: str):
         logger.error(f"Task {task_id} error: {error_message}")
