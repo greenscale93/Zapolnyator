@@ -5,7 +5,7 @@ from aiogram import Router, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, Bot
+from aiogram.types import Message, FSInputFile
 from aiofiles import open as aio_open
 from src.client import OrchestratorClient
 
@@ -25,7 +25,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "Вы можете отправить их одновременно (одним сообщением) или по очереди."
     )
 
-@router.message(Command("reset", "start"))
+@router.message(Command("reset"))
 async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
@@ -52,7 +52,6 @@ async def handle_document(message: Message, state: FSMContext):
         file_path = await save_document(doc, "excel")
         await state.update_data(excel_path=file_path)
         await message.answer(f"✅ Excel-файл «{file_name}» сохранён.")
-
     elif ext == '.mxl':
         if mxl_path:
             await message.answer("MXL-файл уже был загружен. Если хотите заменить, отправьте новый.")
@@ -60,7 +59,6 @@ async def handle_document(message: Message, state: FSMContext):
         file_path = await save_document(doc, "mxl")
         await state.update_data(mxl_path=file_path)
         await message.answer(f"✅ MXL-файл «{file_name}» сохранён.")
-
     else:
         await message.answer("Неизвестный формат. Пожалуйста, отправьте Excel (.xlsx/.xls) или MXL (.mxl) файл.")
         return
@@ -91,46 +89,37 @@ async def start_processing(message: Message, state: FSMContext, excel_path: str,
         return
 
     await message.answer(f"✅ Задача создана (ID: {task_id}). Начинаю обработку...")
-    await state.update_data(task_id=task_id, chat_id=message.chat.id)
-    asyncio.create_task(poll_task_status(state, task_id, message.bot))
+    await state.update_data(task_id=task_id)
+    asyncio.create_task(poll_task_status(message, state, task_id))
 
-async def poll_task_status(state: FSMContext, task_id: str, bot: Bot):
+async def poll_task_status(message: Message, state: FSMContext, task_id: str):
     client = OrchestratorClient()
-    data = await state.get_data()
-    chat_id = data.get("chat_id")
-    if not chat_id:
-        logger.error("No chat_id in state")
-        return
-
     while True:
         try:
             status = await client.get_task_status(task_id)
         except Exception as e:
-            await bot.send_message(chat_id, f"❌ Ошибка получения статуса: {str(e)}")
+            await message.answer(f"❌ Ошибка получения статуса: {str(e)}")
             break
 
         if status["status"] == "done":
             result = status.get("result", {})
-            file_path = result.get("file_url")
-            if file_path:
-                try:
-                    with open(file_path, 'rb') as f:
-                        await bot.send_document(
-                            chat_id=chat_id,
-                            document=f,
-                            caption="✅ Ваш заполненный отчёт"
-                        )
-                except Exception as e:
-                    await bot.send_message(chat_id, f"❌ Ошибка при отправке файла: {str(e)}")
+            file_url = result.get("file_url")
             metrics = result.get("metrics", {})
+            await message.answer("✅ Обработка завершена успешно!")
+            if file_url:
+                try:
+                    file = FSInputFile(file_url)
+                    await message.answer_document(file, caption="📁 Заполненный отчёт")
+                except Exception as e:
+                    await message.answer(f"❌ Не удалось отправить файл: {str(e)}")
             if metrics:
-                await bot.send_message(chat_id, f"📊 Показатели: {metrics}")
+                await message.answer(f"📊 Показатели: {metrics}")
             await state.clear()
             break
 
         elif status["status"] == "error":
             error = status.get("error", "Неизвестная ошибка")
-            await bot.send_message(chat_id, f"❌ Ошибка обработки: {error}")
+            await message.answer(f"❌ Ошибка обработки: {error}")
             await state.clear()
             break
 
@@ -138,7 +127,7 @@ async def poll_task_status(state: FSMContext, task_id: str, bot: Bot):
             question_data = status.get("question", {})
             question_text = question_data.get("text", "Уточните, пожалуйста.")
             await state.update_data(waiting_question=question_data)
-            await bot.send_message(chat_id, f"❓ {question_text}")
+            await message.answer(f"❓ {question_text}")
             await state.set_state(WaitingState.answer)
             break
 
@@ -163,8 +152,7 @@ async def handle_answer(message: Message, state: FSMContext):
 
     await message.answer("✅ Ответ принят. Продолжаю обработку...")
     await state.set_state(None)
-    # Запускаем опрос снова
-    asyncio.create_task(poll_task_status(state, task_id, message.bot))
+    asyncio.create_task(poll_task_status(message, state, task_id))
 
 async def save_document(doc: types.Document, prefix: str) -> str:
     temp_dir = os.getenv("TEMP_DIR", "/app/temp")
