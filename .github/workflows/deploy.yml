@@ -19,11 +19,21 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-            cd /home/${{ secrets.VPS_USER }}/Zalopnyator || git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git /home/${{ secrets.VPS_USER }}/Zalopnyator
-            cd /home/${{ secrets.VPS_USER }}/Zalopnyator
+            # Настраиваем SSH-ключ для git clone
+            mkdir -p ~/.ssh
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+            # Клонируем или обновляем репозиторий через SSH
+            cd /home/${{ secrets.VPS_USER }}/Zapolnyator || git clone git@github.com:${{ github.repository }}.git /home/${{ secrets.VPS_USER }}/Zapolnyator
+            cd /home/${{ secrets.VPS_USER }}/Zapolnyator
             git pull origin main
+
+            # Создаём .env
             echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" > .env
             echo "TEMP_DIR=/app/temp" >> .env
+
             mkdir -p temp
             docker compose down
             docker compose up -d --build
