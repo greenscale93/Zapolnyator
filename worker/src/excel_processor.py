@@ -38,7 +38,6 @@ async def read_excel_structure(file_path: str) -> dict:
         sheets = {}
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            # Предполагаем, что заголовки во второй строке (индекс 2)
             header_row = 2
             headers = [cell.value for cell in ws[header_row] if cell.value]
             sheets[sheet_name] = {
@@ -84,7 +83,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 logger.warning(f"Decrypt failed: {e}")
 
         # 3. Читаем источник (Excel) в DataFrame
-        df_source = pd.read_excel(source_path, header=0)  # заголовки в первой строке источника
+        df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
         # 4. Применяем фильтры (с приведением к строке)
@@ -94,7 +93,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if filters:
             for col, val in filters.items():
                 if col in df_source.columns:
-                    # Приводим к строке для безопасного сравнения
                     df_source = df_source[df_source[col].astype(str) == str(val)]
                     logger.info(f"Applied filter {col} = {val}, rows left: {len(df_source)}")
                 else:
@@ -118,17 +116,15 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         # 6. Определяем номер строки с заголовками в шаблоне (по умолчанию 2)
         header_row = mapping.get("header_row", 2)
-        # Проверяем, есть ли вообще данные в этой строке
         if ws.cell(row=header_row, column=1).value is None:
-            # Если пусто, возможно заголовки в первой строке — пробуем
             header_row = 1
 
         # 7. Подготавливаем данные для вставки
         source_cols = mapping.get("source_columns", {})
+        # Преобразуем ключи (номера колонок) из строк в целые числа
+        source_cols = {int(k): v for k, v in source_cols.items()}
         append = mapping.get("append_to_end", True)
 
-        # source_cols: {target_col_index: source_col_name_or_expression}
-        # target_col_index — номер колонки в шаблоне (начиная с 1)
         rows_to_insert = []
         for idx, row in df_source.iterrows():
             new_row = {}
@@ -145,30 +141,24 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if not rows_to_insert:
             return {"status": "error", "error_message": "No data to insert"}
 
-        # 8. Вставляем строки (начиная с header_row + 1, если append_to_end=True)
+        # 8. Вставляем строки
         if append:
-            # Находим последнюю заполненную строку после заголовков
             max_row = ws.max_row
-            # Если есть пустые строки между данными, ищем последнюю непустую
             start_row = max_row + 1
             while start_row > header_row and ws.cell(row=start_row-1, column=1).value is None:
                 start_row -= 1
-            # Если start_row <= header_row, значит данных нет, начинаем с header_row+1
             if start_row <= header_row:
                 start_row = header_row + 1
         else:
-            # Если append=false, очищаем всё после заголовков
             if ws.max_row > header_row:
                 ws.delete_rows(header_row + 1, ws.max_row - header_row)
             start_row = header_row + 1
 
-        # Записываем данные
         for i, row_dict in enumerate(rows_to_insert, start=start_row):
             for col_idx, value in row_dict.items():
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
 
-        # 9. Сохраняем книгу (НЕ трогаем таблицы и автофильтр)
         wb.save(output_path)
 
         return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
