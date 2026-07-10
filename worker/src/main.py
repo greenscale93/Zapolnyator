@@ -34,7 +34,8 @@ async def call_tool(request: ToolRequest):
                 mxl_data=request.arguments["mxl_data"],
                 month=request.arguments["month"],
                 year=request.arguments["year"],
-                rules=request.arguments.get("rules", {})
+                rules=request.arguments.get("rules", {}),
+                user_mapping=request.arguments.get("user_mapping")
             )
         elif request.tool == "update_excel":
             result = await update_excel(
