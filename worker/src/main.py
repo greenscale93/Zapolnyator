@@ -52,9 +52,13 @@ async def call_tool(request: ToolRequest):
         
         elif request.tool == "read_excel_data":
             file_path = request.arguments["file_path"]
-            sheet_name = request.arguments.get("sheet_name")  # если не указан, первый лист
+            sheet_name = request.arguments.get("sheet_name")
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
+                # Если sheet_name не указан, читаем первый лист (индекс 0)
+                if sheet_name is None:
+                    df = pd.read_excel(file_path, sheet_name=0, header=0)
+                else:
+                    df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
                 # Заменяем NaN на None
                 df = df.where(pd.notnull(df), None)
                 data = df.to_dict(orient='records')
