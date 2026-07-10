@@ -7,6 +7,17 @@ from io import StringIO
 
 logger = logging.getLogger(__name__)
 
+def fix_encoding(s):
+    """Принудительно перекодирует строку из cp1251 в utf-8, если нужно."""
+    if isinstance(s, str):
+        try:
+            # Проверяем, есть ли символы, характерные для cp1251
+            if any(ord(c) > 127 for c in s):
+                return s.encode('cp1251').decode('utf-8', errors='ignore')
+        except:
+            pass
+    return s
+
 def extract_table_data(parsed_structure):
     if isinstance(parsed_structure, dict):
         if 'data' in parsed_structure:
@@ -20,8 +31,8 @@ async def parse_mxl(file_path: str) -> dict:
         return {"status": "error", "error_message": f"File not found: {file_path}"}
     
     try:
-        # Пробуем разные кодировки
-        encodings = ['cp1251', 'windows-1251', 'utf-8', 'koi8-r']
+        # Принудительно пробуем cp1251, затем utf-8
+        encodings = ['cp1251', 'windows-1251', 'utf-8']
         content = None
         used_encoding = None
         for enc in encodings:
@@ -36,6 +47,11 @@ async def parse_mxl(file_path: str) -> dict:
             return {"status": "error", "error_message": "Cannot detect encoding"}
         logger.info(f"Used encoding for MXL: {used_encoding}")
         
+        # Если использовали cp1251, перекодируем в utf-8
+        if used_encoding.lower() in ['cp1251', 'windows-1251']:
+            content = content.encode('cp1251').decode('utf-8', errors='ignore')
+            logger.info("Re-encoded from cp1251 to utf-8")
+        
         # Ищем все строки вида {"#","значение"} или {"#","значение1","значение2"}
         pattern = r'\{"#"\s*,\s*"([^"]*)"(?:\s*,\s*"([^"]*)")?\s*\}'
         matches = re.findall(pattern, content)
@@ -48,12 +64,14 @@ async def parse_mxl(file_path: str) -> dict:
         is_header = True
         
         for match in matches:
+            # Перекодируем каждую строку в match
+            decoded_match = tuple(fix_encoding(s) for s in match)
             if is_header:
-                headers = [m for m in match if m]
+                headers = [s for s in decoded_match if s]
                 is_header = False
             else:
                 row = {}
-                for i, value in enumerate(match):
+                for i, value in enumerate(decoded_match):
                     if i < len(headers):
                         row[headers[i]] = value
                 if row:
@@ -85,28 +103,33 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
         if not data:
             return {"status": "error", "error_message": "No data extracted from MXL"}
         
-        cleaned_data = []
+        # Применяем fix_encoding ко всем строкам в данных и заголовкам
+        fixed_data = []
         for row in data:
             if isinstance(row, dict):
-                cleaned_row = {k: v for k, v in row.items() if k is not None}
-                cleaned_data.append(cleaned_row)
+                fixed_row = {}
+                for k, v in row.items():
+                    fixed_k = fix_encoding(k)
+                    fixed_v = fix_encoding(v)
+                    fixed_row[fixed_k] = fixed_v
+                fixed_data.append(fixed_row)
             else:
-                cleaned_data.append(row)
-        data = cleaned_data
+                fixed_data.append(row)
+        data = fixed_data
         
         if data and isinstance(data[0], dict):
             columns = list(data[0].keys())
         else:
             columns = []
         
+        # Генерируем CSV в UTF-8 с BOM
         output = StringIO()
         if columns:
             writer = csv.DictWriter(output, fieldnames=columns, quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
             for row in data:
                 if isinstance(row, dict):
-                    clean_row = {k: v for k, v in row.items() if k is not None}
-                    writer.writerow(clean_row)
+                    writer.writerow(row)
                 else:
                     writer.writerow(row)
         else:
@@ -130,7 +153,7 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
                 "csv_path": csv_path,
                 "rows": len(data),
                 "columns": columns,
-                "size_bytes": len(csv_data.encode('utf-8'))
+                "size_bytes": len(csv_data.encode('utf-8-sig'))
             }
         }
     except Exception as e:
