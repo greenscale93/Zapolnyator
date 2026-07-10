@@ -6,6 +6,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import msoffcrypto
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,16 @@ async def read_excel_structure(file_path: str) -> dict:
         return {"status": "error", "error_message": str(e)}
 
 def clean_number(value):
-    """Очищает строку от неразрывных пробелов и преобразует в число."""
+    """
+    Очищает строку от неразрывных пробелов, пробелов-разделителей тысяч,
+    заменяет запятую на точку и преобразует в число.
+    Если преобразование не удаётся, возвращает исходное значение.
+    """
     if isinstance(value, str):
-        cleaned = value.replace('\u00a0', '').replace(',', '.').strip()
+        # Удаляем все пробелы (включая неразрывные) и другие нецифровые символы, кроме точки и запятой
+        cleaned = re.sub(r'[^\d,.-]', '', value.replace('\u00a0', '').replace(' ', ''))
+        # Заменяем запятую на точку (для десятичных)
+        cleaned = cleaned.replace(',', '.')
         try:
             return float(cleaned)
         except ValueError:
@@ -61,10 +69,6 @@ def clean_number(value):
     return value
 
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456", output_path: str = None) -> dict:
-    """
-    Применяет маппинг к указанному листу.
-    Поддерживает группировку (group_by) и агрегацию (aggregations).
-    """
     try:
         # 1. Определяем файл для работы
         if output_path is None:
@@ -118,7 +122,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
 
-        # 4. Применяем view_filters (если есть) — это дополнительный фильтр по колонке с несколькими допустимыми значениями
+        # 4. Применяем view_filters (если есть)
         view_filters = mapping.get("view_filters", {})
         if view_filters:
             for col, allowed_values in view_filters.items():
@@ -131,30 +135,86 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying view filters"}
 
-        # 5. Группировка и агрегация (если заданы)
+        # 5. Группировка и агрегация
         group_by = mapping.get("group_by")
         aggregations = mapping.get("aggregations", {})
 
-        if group_by and group_by in df_source.columns:
-            # Определяем агрегационные функции
-            agg_funcs = {}
-            for agg_col, agg_type in aggregations.items():
-                if agg_col in df_source.columns:
-                    if agg_type == "sum":
-                        agg_funcs[agg_col] = "sum"
-                    elif agg_type == "concat":
-                        agg_funcs[agg_col] = lambda x: "; ".join(x.dropna().astype(str).unique())
-                    else:
-                        agg_funcs[agg_col] = agg_type
-            if agg_funcs:
-                df_grouped = df_source.groupby(group_by).agg(agg_funcs).reset_index()
-                logger.info(f"Grouped by {group_by}, rows after grouping: {len(df_grouped)}")
-                # Переименовываем колонки обратно (если нужно)
-                # df_grouped уже имеет колонки: group_by и agg_cols
-                # Преобразуем в список словарей
-                data_for_insert = df_grouped.to_dict(orient='records')
-            else:
+        if group_by:
+            # Преобразуем group_by в список, если строка
+            if isinstance(group_by, str):
+                group_by = [group_by]
+            # Проверяем, что все колонки есть
+            group_by = [col for col in group_by if col in df_source.columns]
+            if not group_by:
+                logger.warning("No valid group_by columns, skipping grouping")
                 data_for_insert = df_source.to_dict(orient='records')
+            else:
+                # Создаём агрегационные функции
+                agg_funcs = {}
+                for agg_col, agg_type in aggregations.items():
+                    if agg_col in df_source.columns:
+                        if agg_type == "sum":
+                            agg_funcs[agg_col] = "sum"
+                        elif agg_type == "concat":
+                            agg_funcs[agg_col] = lambda x: "; ".join(x.dropna().astype(str).unique())
+                        elif agg_type == "concat_premia":
+                            # Специальная функция: собираем комментарии только из строк с "Премия"
+                            def concat_premia(series):
+                                # series — это группа, нужно получить комментарии из строк где ВидНачисления == "Премия"
+                                # для этого нужно получить доступ к исходному DataFrame, но у нас только серия
+                                # Мы можем использовать apply с доступом к группе
+                                # В pandas groupby можно передать пользовательскую функцию, которая получает всю группу
+                                return "dummy"
+                            # Мы не можем использовать lambda, потому что нужен доступ к группе.
+                            # Поэтому мы переделаем groupby через apply.
+                            agg_funcs[agg_col] = None  # будет обработано отдельно
+                        else:
+                            agg_funcs[agg_col] = agg_type
+                # Если есть concat_premia, используем apply с пользовательской функцией
+                if "concat_premia" in aggregations.values():
+                    def group_agg(group):
+                        result = {}
+                        # Для колонок group_by берём первое значение (они одинаковы)
+                        for col in group_by:
+                            result[col] = group[col].iloc[0]
+                        # Суммируем Оклад и Премию
+                        if 'Оклад' in df_source.columns:
+                            result['Оклад'] = group[group['ВидНачисления'] == 'Оплата труда']['Оклад'].astype(float).sum()
+                        else:
+                            result['Оклад'] = 0
+                        if 'Премия' in df_source.columns:
+                            result['Премия'] = group['Премия'].astype(float).sum()
+                        else:
+                            result['Премия'] = 0
+                        # Комментарий: только из строк с Премия
+                        if 'Комментарий' in df_source.columns:
+                            comments = group[group['ВидНачисления'] == 'Премия']['Комментарий'].dropna().astype(str).unique()
+                            result['Комментарий'] = "; ".join(comments)
+                        else:
+                            result['Комментарий'] = ""
+                        return pd.Series(result)
+                    # Применяем группировку
+                    df_grouped = df_source.groupby(group_by, as_index=False).apply(group_agg).reset_index(drop=True)
+                    data_for_insert = df_grouped.to_dict(orient='records')
+                else:
+                    # Обычная группировка с sum/concat
+                    # Для concat используем агрегацию с пользовательской функцией
+                    agg_funcs_final = {}
+                    for agg_col, agg_type in aggregations.items():
+                        if agg_col in df_source.columns:
+                            if agg_type == "sum":
+                                agg_funcs_final[agg_col] = "sum"
+                            elif agg_type == "concat":
+                                agg_funcs_final[agg_col] = lambda x: "; ".join(x.dropna().astype(str).unique())
+                            else:
+                                agg_funcs_final[agg_col] = agg_type
+                    if agg_funcs_final:
+                        df_grouped = df_source.groupby(group_by, as_index=False).agg(agg_funcs_final)
+                        # Переименовываем колонки обратно
+                        # df_grouped уже имеет колонки group_by и agg_cols
+                        data_for_insert = df_grouped.to_dict(orient='records')
+                    else:
+                        data_for_insert = df_source.to_dict(orient='records')
         else:
             data_for_insert = df_source.to_dict(orient='records')
 
