@@ -73,3 +73,6 @@ async def save_document(doc: types.Document, prefix: str) -> str:
     async with aio_open(file_path, "wb") as f:
         await f.write(downloaded_file.read())
     return file_path
+
+def register_handlers(dp):
+    dp.include_router(router)
