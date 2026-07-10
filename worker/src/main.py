@@ -9,6 +9,9 @@ from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import read_excel_structure, apply_sheet_mapping
 import openpyxl
+import tempfile
+import zipfile
+import msoffcrypto
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -111,9 +114,35 @@ async def call_tool(request: ToolRequest):
             if not os.path.exists(template_path):
                 return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
             try:
-                wb = openpyxl.load_workbook(template_path, data_only=True)
+                # Пытаемся открыть с расшифровкой, если файл зашифрован
+                wb = None
+                try:
+                    # Сначала обычное открытие
+                    wb = openpyxl.load_workbook(template_path, data_only=True)
+                except zipfile.BadZipFile:
+                    # Возможно файл зашифрован, пробуем расшифровать паролем "987456"
+                    try:
+                        with open(template_path, 'rb') as f:
+                            file = msoffcrypto.OfficeFile(f)
+                            if file.is_encrypted():
+                                file.load_key(password="987456")
+                                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                                    file.decrypt(tmp)
+                                    tmp_path = tmp.name
+                                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                                os.unlink(tmp_path)
+                            else:
+                                raise  # если не зашифрован, перехватим ниже
+                    except:
+                        raise ValueError("Не удалось прочитать шаблон (возможно, повреждён или неверный пароль)")
+
+                if wb is None:
+                    return ToolResponse(status="error", error_message="Не удалось открыть файл шаблона")
+
                 if "Отчетность БИТ 2026" not in wb.sheetnames:
+                    wb.close()
                     return ToolResponse(status="error", error_message="Лист 'Отчетность БИТ 2026' не найден в шаблоне")
+
                 ws = wb["Отчетность БИТ 2026"]
                 offices = set()
                 for row in range(13, 17):
@@ -129,7 +158,7 @@ async def call_tool(request: ToolRequest):
             except Exception as e:
                 logger.exception("read_template_offices error")
                 return ToolResponse(status="error", error_message=str(e))
-        
+                    
         else:
             return ToolResponse(status="error", error_message=f"Unknown tool: {request.tool}")
     
