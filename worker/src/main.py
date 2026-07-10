@@ -1,12 +1,10 @@
 import logging
 import os
 import json
-import csv
-from io import StringIO
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Any, Dict, Optional, List
-from src.mxl_parser import parse_mxl
+from typing import Any, Dict, Optional
+from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import write_excel_data, read_excel_structure
 
 logging.basicConfig(level=logging.INFO)
@@ -34,32 +32,10 @@ async def call_tool(request: ToolRequest):
             return ToolResponse(status="success", result=result.get("result"))
         
         elif request.tool == "convert_mxl_to_csv":
-            file_path = request.arguments["file_path"]
-            parsed = await parse_mxl(file_path)
-            if parsed.get("status") == "error":
-                return ToolResponse(status="error", error_message=parsed.get("error_message"))
-            data = parsed["result"]["data"]
-            columns = parsed["result"]["columns"]
-            if not data:
-                return ToolResponse(status="error", error_message="No data in MXL")
-            # Генерируем CSV
-            output = StringIO()
-            writer = csv.DictWriter(output, fieldnames=columns, delimiter=';', quoting=csv.QUOTE_MINIMAL)
-            writer.writeheader()
-            writer.writerows(data)
-            csv_data = output.getvalue()
-            # Сохраняем CSV рядом с исходным файлом
-            csv_path = file_path + ".csv"
-            with open(csv_path, 'w', encoding='utf-8-sig') as f:
-                f.write(csv_data)
-            logger.info(f"Converted MXL to CSV: {csv_path}, rows={len(data)}, size={len(csv_data)}")
-            return ToolResponse(status="success", result={
-                "csv_path": csv_path,
-                "csv_data": csv_data,  # можно передать, но если большой, лучше не передавать
-                "rows": len(data),
-                "columns": columns,
-                "size": len(csv_data)
-            })
+            result = await convert_mxl_to_csv(request.arguments["file_path"])
+            if result.get("status") == "error":
+                return ToolResponse(status="error", error_message=result.get("error_message"))
+            return ToolResponse(status="success", result=result.get("result"))
         
         elif request.tool == "get_mxl_structure":
             file_path = request.arguments["file_path"]
@@ -90,7 +66,7 @@ async def call_tool(request: ToolRequest):
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
                     filtered = [row for row in filtered if row.get(col) == value]
-            # Проверяем сериализуемость
+            # Проверка сериализуемости
             try:
                 json.dumps(filtered, ensure_ascii=False, default=str)
             except Exception as e:

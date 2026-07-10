@@ -34,14 +34,10 @@ class OrchestratorAgent:
 
     async def _send_telegram_message(self, user_id: int, text: str, file_path: str = None):
         if not self.bot_token:
-            logger.warning("TELEGRAM_BOT_TOKEN not set, cannot send notification")
+            logger.warning("TELEGRAM_BOT_TOKEN not set")
             return
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": user_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": user_id, "text": text, "parse_mode": "HTML"}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(url, json=payload)
@@ -56,7 +52,7 @@ class OrchestratorAgent:
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
-    async def _save_debug_data(self, data: dict, prefix: str) -> str:
+    async def _save_debug_data(self, data, prefix: str) -> str:
         fd, path = tempfile.mkstemp(suffix='.txt', prefix=f"{prefix}_")
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(json.dumps(data, indent=2, ensure_ascii=False, default=str))
@@ -84,134 +80,132 @@ class OrchestratorAgent:
         await self._send_telegram_message(
             user_id,
             f"🔄 Начинаю обработку файлов для {month} {year}.\n"
-            f"📁 MXL: {mxl_path}\n"
-            f"📁 Excel: {excel_path}"
+            f"📁 MXL: {mxl_path}\n📁 Excel: {excel_path}"
         )
 
         # 1. Конвертируем MXL в CSV
-        await self._send_telegram_message(user_id, "🔍 Конвертирую MXL в CSV...")
+        await self._send_telegram_message(user_id, "🔄 Конвертирую MXL в CSV...")
         convert_result = await self.worker_client.call_tool("convert_mxl_to_csv", {"file_path": mxl_path})
         if convert_result.get("status") == "error":
             await self._set_error(task_id, convert_result.get("error_message"))
             await self._send_telegram_message(user_id, f"❌ Ошибка конвертации MXL: {convert_result.get('error_message')}")
             return
-        csv_path = convert_result["result"]["csv_path"]
+        
         csv_data = convert_result["result"]["csv_data"]
+        csv_path = convert_result["result"]["csv_path"]
         rows = convert_result["result"]["rows"]
         columns = convert_result["result"]["columns"]
-        size = convert_result["result"]["size"]
+
+        # Отправляем CSV файл пользователю (всегда)
         await self._send_telegram_message(
             user_id,
-            f"✅ MXL сконвертирован в CSV: {rows} строк, размер {size} байт.\n"
-            f"📁 CSV сохранён: {csv_path}"
+            f"📄 CSV-файл создан ({rows} строк, {len(csv_data)} символов).",
+            file_path=csv_path
         )
 
-        # Если CSV большой, отправляем пользователю и передаём в LLM только первые строки
-        csv_for_llm = csv_data
-        if size > 500000:  # 500 KB
-            # Сохраняем полный CSV в файл и отправляем пользователю
-            debug_file = await self._save_debug_data({"csv_data": csv_data}, "full_csv")
+        # Если CSV слишком большой, обрезаем для контекста
+        csv_for_context = csv_data
+        if len(csv_data) > 200000:  # 200 KB – безопасный лимит
+            # Берем первые 500 строк
+            lines = csv_data.splitlines()
+            header = lines[0] if lines else ""
+            body = lines[1:501] if len(lines) > 1 else []
+            csv_for_context = header + "\n" + "\n".join(body) + f"\n... (всего {len(lines)} строк, показано 500)"
             await self._send_telegram_message(
                 user_id,
-                f"📦 CSV файл большой ({size} байт). Полный файл сохранён и отправлен.",
-                file_path=debug_file
+                f"⚠️ CSV слишком большой ({len(csv_data)} символов). В контекст отправлено только 500 строк. Полный файл сохранён."
             )
-            # Оставляем только первые 200 строк для LLM
-            lines = csv_data.splitlines()
-            if len(lines) > 200:
-                csv_for_llm = "\n".join(lines[:200]) + f"\n... (всего {len(lines)} строк, полный файл отправлен пользователю)"
-            else:
-                csv_for_llm = csv_data
 
-        # 2. Формируем системный промпт с инструкцией и CSV-данными
+        # 2. Получаем структуру Excel
+        await self._send_telegram_message(user_id, "🔍 Читаю структуру Excel...")
+        excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": excel_path})
+        if excel_struct.get("status") == "error":
+            await self._set_error(task_id, excel_struct.get("error_message"))
+            await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {excel_struct.get('error_message')}")
+            return
+        sheets = excel_struct["result"]["sheets"]
+
+        # 3. Формируем системный промпт с полной инструкцией и данными
         system_prompt = f"""
-Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки (сконвертированной в CSV).
+Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки.
 Вот полная инструкция, которой ты должен следовать:
 
 {self.instruction}
 
-ВАЖНО: файлы уже загружены на сервер и доступны по следующим путям:
-- MXL-файл (оригинал): {mxl_path}
-- CSV-файл (сконвертированный): {csv_path}
+Файлы уже загружены на сервер:
+- MXL (конвертирован в CSV): {csv_path}
 - Excel-шаблон: {excel_path}
 Месяц: {month}, год: {year}.
+НЕ ЗАПРАШИВАЙ пути к файлам — они уже известны.
 
-Содержимое CSV-файла (первые строки):
-{csv_for_llm}
+Данные из MXL в формате CSV (первые 500 строк):
+{csv_for_context}
 
-Всего строк в CSV: {rows}, колонки: {columns}.
+Структура Excel:
+{json.dumps(sheets, indent=2, ensure_ascii=False)}
 
-Ты можешь использовать следующие инструменты (вызывай их через функцию call_tool):
-- filter_mxl_data(file_path, filters) — фильтрует данные из MXL-файла (оригинал). file_path = {mxl_path}. 
-  Используй этот инструмент, если тебе нужны полные данные для конкретного типа записей.
-- write_excel(template_path, sheets_data, password, output_path) — записывает данные в Excel. template_path = {excel_path}.
-- read_excel_structure(file_path) — читает структуру Excel.
+Ты можешь использовать инструменты (вызывай через call_tool):
+- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}). file_path = {mxl_path}.
+- write_excel(template_path, sheets_data, password, output_path) — записывает данные. template_path = {excel_path}.
+- read_excel_structure(file_path) — уже вызвано.
 
-Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context), если не хватает информации.
+Также ты можешь запрашивать уточнения через ask_user.
 
-Порядок действий:
-1. Проанализируй CSV-данные (уже в промпте) и определи соответствие колонок.
-2. Если нужно полные данные для каких-то типов, используй filter_mxl_data с фильтрами.
-3. Примени бизнес-логику согласно инструкции:
-   - Фильтры: только ФАКТ, исключить ГКП 10.6, исключить ВГО.
-   - Группировка по типам записей.
-   - Обработка взаиморасчетов (схлопывание, разделение по БДР/БДДС).
-   - Группировка ФОТ по сотрудникам.
-   - Расчёт фактического ФОТ.
-4. Сформируй структуру для записи в Excel.
-5. Вызови write_excel.
-6. Вычисли итоговые показатели и верни их в JSON-ответе.
+Порядок действий (строго по инструкции):
+1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, ПодразделениеКонтрагентДляОтчета, СуммаБезНДС, СуммаСНДС, СтавкаНДС, Комментарий, НомерК7, Сотрудник, Оклад, Премия, ВидНачисленияЗП, ТипОборота, ВидОборота, Направление, ВГО.
+2. Примени фильтры: Сценарий = "ФАКТ", исключи ГКП 10.6, исключи ВГО.
+   Вызывай filter_mxl_data поочерёдно для каждого типа записи:
+   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Реализация" }})
+   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Оплата" }})
+   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "Взаиморасчет" }})
+   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "НачислениеЗарплаты" }})
+   - filter_mxl_data(file_path, filters={{ "Сценарий": "ФАКТ", "ТипЗаписи": "ФактическийФОТ" }})
+3. Обработай Взаиморасчеты согласно инструкции.
+4. Сгруппируй НачислениеЗарплаты по сотруднику.
+5. Вычисли фактический ФОТ.
+6. Сформируй структуру для записи в Excel:
+   - Реализация: Подразделение, Сценарий, Период ("Месяц Год"), Контрагент, Проект, Сумма с НДС, Сумма без НДС, Ставка НДС (преобразовать), Комментарий (Этап), № документа.
+   - ДС: аналогично, но Комментарий из колонки Комментарий.
+   - ФОТ: Подразделение, Сотрудник, ФОТ, Премия, Комментарий.
+   - Взаиморасчеты: Подразделение, Сценарий, Период, Отдел, Контрагент, Проект, Направление (преобразованное), Сумма без НДС, Комментарий.
+7. Вызови write_excel.
+8. Вычисли итоговые показатели.
 
-Не запрашивай пути к файлам, они уже известны. Используй предоставленные данные.
+Все данные уже на сервере. Используй фильтрацию по типам записей.
 """
 
-        # 3. Сохраняем историю
         history = [{"role": "system", "content": system_prompt}]
-        init_message = f"Я проанализирую CSV-данные и подготовлю Excel. Месяц: {month}, год: {year}."
-        history.append({"role": "assistant", "content": init_message})
+        history.append({"role": "assistant", "content": f"Я проанализирую данные и подготовлю Excel для {month} {year}."})
 
-        # 4. Цикл вызовов
         max_iterations = 15
         iteration = 0
         total_tokens = 0
         while iteration < max_iterations:
             iteration += 1
             try:
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "call_tool",
-                            "description": "Вызвать инструмент Worker",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "tool": {
-                                        "type": "string",
-                                        "enum": ["filter_mxl_data", "write_excel", "read_excel_structure", "ask_user"]
-                                    },
-                                    "arguments": {
-                                        "type": "object",
-                                        "description": "Аргументы для инструмента"
-                                    }
-                                },
-                                "required": ["tool", "arguments"]
-                            }
+                tools = [{
+                    "type": "function",
+                    "function": {
+                        "name": "call_tool",
+                        "description": "Вызвать инструмент Worker",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string", "enum": ["filter_mxl_data", "write_excel", "read_excel_structure", "ask_user"]},
+                                "arguments": {"type": "object"}
+                            },
+                            "required": ["tool", "arguments"]
                         }
                     }
-                ]
-                # Проверка размера истории перед отправкой
+                }]
+                
                 history_size = len(json.dumps(history, ensure_ascii=False, default=str))
                 if history_size > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
-                    await self._send_telegram_message(
-                        user_id,
-                        f"⚠️ Размер истории ({history_size} символов) превышает лимит. Сохранено в файл.",
-                        file_path=debug_file
-                    )
+                    await self._send_telegram_message(user_id, f"⚠️ Размер истории ({history_size} символов) превышает лимит. Файл сохранён.", file_path=debug_file)
                     if len(history) > 4:
                         history = [history[0]] + history[-3:]
-                    logger.warning(f"History truncated to 4 messages due to size")
+                    logger.warning(f"History truncated due to size")
 
                 response = await self.client.chat.completions.create(
                     model="deepseek-chat",
@@ -224,57 +218,44 @@ class OrchestratorAgent:
                 usage = response.usage
                 total_tokens += usage.total_tokens if usage else 0
                 history.append(msg.model_dump())
-
-                logger.info(f"Iteration {iteration}: tokens used = {usage.total_tokens if usage else 'N/A'}, total so far = {total_tokens}")
+                logger.info(f"Iteration {iteration}: tokens used = {usage.total_tokens if usage else 'N/A'}, total = {total_tokens}")
 
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
-                        func_name = tc.function.name
                         args = json.loads(tc.function.arguments)
-                        if func_name == "call_tool":
-                            tool_name = args.get("tool")
-                            tool_args = args.get("arguments", {})
-                            if tool_name == "ask_user":
-                                question = tool_args.get("question")
-                                context = tool_args.get("context", {})
-                                await self._send_telegram_message(user_id, f"❓ Вопрос к пользователю: {question}")
-                                await self.session_manager.update_session(task_id, {
-                                    "status": "waiting_question",
-                                    "question": {"text": question, "context": context},
-                                    "pending_args": args,
-                                    "history": history,
-                                    "total_tokens": total_tokens
-                                })
-                                logger.info(f"Asked user: {question}")
-                                return
+                        tool_name = args.get("tool")
+                        tool_args = args.get("arguments", {})
+                        if tool_name == "ask_user":
+                            question = tool_args.get("question")
+                            context = tool_args.get("context", {})
+                            await self._send_telegram_message(user_id, f"❓ Вопрос: {question}")
+                            await self.session_manager.update_session(task_id, {
+                                "status": "waiting_question",
+                                "question": {"text": question, "context": context},
+                                "pending_args": args,
+                                "history": history,
+                                "total_tokens": total_tokens
+                            })
+                            logger.info(f"Asked user: {question}")
+                            return
+                        else:
+                            await self._send_telegram_message(user_id, f"⚙️ Вызываю {tool_name}...")
+                            result = await self.worker_client.call_tool(tool_name, tool_args)
+                            if result.get("status") == "error":
+                                await self._send_telegram_message(user_id, f"❌ Ошибка {tool_name}: {result.get('error_message')}")
                             else:
-                                await self._send_telegram_message(user_id, f"⚙️ Вызываю инструмент: {tool_name}...")
-                                result = await self.worker_client.call_tool(tool_name, tool_args)
-                                if result.get("status") == "error":
-                                    await self._send_telegram_message(user_id, f"❌ Ошибка при вызове {tool_name}: {result.get('error_message')}")
-                                else:
-                                    await self._send_telegram_message(user_id, f"✅ Инструмент {tool_name} выполнен успешно.")
-                                # Проверяем размер результата
-                                result_str = json.dumps(result, ensure_ascii=False, default=str)
-                                if len(result_str) > 3000000:
-                                    debug_file = await self._save_debug_data(result, f"{tool_name}_result")
-                                    await self._send_telegram_message(
-                                        user_id,
-                                        f"📦 Результат {tool_name} слишком большой ({len(result_str)} символов). Сохранён в файл.",
-                                        file_path=debug_file
-                                    )
-                                    if "filtered_data" in result.get("result", {}):
-                                        data = result["result"]["filtered_data"]
-                                        truncated = data[:100] if isinstance(data, list) else data
-                                        result["result"]["filtered_data"] = truncated
-                                        result["result"]["_note"] = f"Показаны только первые 100 из {len(data)} строк. Полный файл отправлен пользователю."
-                                        result_str = json.dumps(result, ensure_ascii=False, default=str)
-                                tool_response = {
-                                    "role": "tool",
-                                    "tool_call_id": tc.id,
-                                    "content": result_str
-                                }
-                                history.append(tool_response)
+                                await self._send_telegram_message(user_id, f"✅ {tool_name} выполнен успешно.")
+                            result_str = json.dumps(result, ensure_ascii=False, default=str)
+                            if len(result_str) > 3000000:
+                                debug_file = await self._save_debug_data(result, f"{tool_name}_result")
+                                await self._send_telegram_message(user_id, f"📦 Результат {tool_name} слишком большой ({len(result_str)} символов). Файл сохранён.", file_path=debug_file)
+                                if "filtered_data" in result.get("result", {}):
+                                    data = result["result"]["filtered_data"]
+                                    result["result"]["filtered_data"] = data[:100] if isinstance(data, list) else data
+                                    result["result"]["_note"] = f"Показаны первые 100 из {len(data)} строк. Полный файл отправлен."
+                                    result_str = json.dumps(result, ensure_ascii=False, default=str)
+                            tool_response = {"role": "tool", "tool_call_id": tc.id, "content": result_str}
+                            history.append(tool_response)
                 else:
                     content = msg.content
                     if content:
@@ -291,12 +272,9 @@ class OrchestratorAgent:
                                 })
                                 await self._send_telegram_message(
                                     user_id,
-                                    f"✅ Обработка завершена успешно!\n"
-                                    f"📁 Файл: {output_path}\n"
-                                    f"📊 Показатели: {metrics}\n"
-                                    f"🔢 Всего токенов использовано: {total_tokens}"
+                                    f"✅ Обработка завершена!\n📁 Файл: {output_path}\n📊 Показатели: {metrics}\n🔢 Токенов: {total_tokens}"
                                 )
-                                logger.info(f"Task {task_id} completed successfully. Total tokens: {total_tokens}")
+                                logger.info(f"Task {task_id} completed. Total tokens: {total_tokens}")
                                 return
                             else:
                                 await self._set_error(task_id, result.get("error_message", "Unknown error"))
@@ -316,17 +294,13 @@ class OrchestratorAgent:
                 error_msg = str(e)
                 if "413" in error_msg or "Request Entity Too Large" in error_msg:
                     debug_file = await self._save_debug_data(history, "413_error_history")
-                    await self._send_telegram_message(
-                        user_id,
-                        f"❌ Ошибка 413: запрос слишком большой. История сохранена в файл.",
-                        file_path=debug_file
-                    )
+                    await self._send_telegram_message(user_id, f"❌ Ошибка 413: история сохранена в файл.", file_path=debug_file)
                 else:
                     await self._send_telegram_message(user_id, f"❌ Критическая ошибка: {error_msg[:200]}")
                 await self._set_error(task_id, error_msg)
                 return
-        await self._set_error(task_id, "Agent reached maximum iterations without completion")
-        await self._send_telegram_message(user_id, "❌ Агент достиг максимального числа итераций без завершения.")
+        await self._set_error(task_id, "Agent reached maximum iterations")
+        await self._send_telegram_message(user_id, "❌ Агент достиг лимита итераций.")
 
     async def process_answer(self, task_id: str, answer: str):
         state = await self.session_manager.get_session(task_id)
@@ -348,7 +322,4 @@ class OrchestratorAgent:
 
     async def _set_error(self, task_id: str, error_message: str):
         logger.error(f"Task {task_id} error: {error_message}")
-        await self.session_manager.update_session(task_id, {
-            "status": "error",
-            "error": error_message
-        })
+        await self.session_manager.update_session(task_id, {"status": "error", "error": error_message})
