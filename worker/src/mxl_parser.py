@@ -1,3 +1,4 @@
+import chardet
 import csv
 import os
 import logging
@@ -8,10 +9,6 @@ from io import StringIO
 logger = logging.getLogger(__name__)
 
 def extract_table_data(parsed_structure):
-    """
-    Извлекает табличные данные из структуры MXL.
-    Ожидает, что parsed_structure — это словарь с ключами 'columns' и 'data'.
-    """
     if isinstance(parsed_structure, dict):
         if 'data' in parsed_structure:
             return parsed_structure['data']
@@ -22,12 +19,20 @@ def extract_table_data(parsed_structure):
 async def parse_mxl(file_path: str) -> dict:
     """
     Парсит MXL-файл (текстовый формат 1С) и возвращает данные.
+    Автоопределение кодировки.
     """
     if not os.path.exists(file_path):
         return {"status": "error", "error_message": f"File not found: {file_path}"}
     
     try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        # Определяем кодировку
+        with open(file_path, 'rb') as f:
+            raw = f.read(10000)
+            encoding = chardet.detect(raw)['encoding'] or 'utf-8'
+        logger.info(f"Detected encoding: {encoding}")
+        
+        # Читаем файл с определённой кодировкой
+        with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
             content = f.read()
         
         # Ищем все строки вида {"#","значение"} или {"#","значение1","значение2"}
@@ -44,11 +49,9 @@ async def parse_mxl(file_path: str) -> dict:
         
         for match in matches:
             if is_header:
-                # Первая строка — это заголовки
                 headers = [m for m in match if m]
                 is_header = False
             else:
-                # Остальные — данные
                 row = {}
                 for i, value in enumerate(match):
                     if i < len(headers):
@@ -102,7 +105,7 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
         else:
             columns = []
         
-        # Генерируем CSV
+        # Генерируем CSV в UTF-8
         output = StringIO()
         if columns:
             writer = csv.DictWriter(output, fieldnames=columns, quoting=csv.QUOTE_MINIMAL)
@@ -123,7 +126,7 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
         
         csv_data = output.getvalue()
         
-        # Сохраняем CSV рядом с исходным файлом
+        # Сохраняем CSV с кодировкой UTF-8
         csv_path = file_path + ".csv"
         with open(csv_path, 'w', encoding='utf-8') as f:
             f.write(csv_data)
