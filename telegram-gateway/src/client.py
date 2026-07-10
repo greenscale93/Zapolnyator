@@ -56,12 +56,12 @@ class OrchestratorClient:
         url = f"{self.base_url}/api/v1/task/{task_id}/stop"
         return await self._request_with_retry("POST", url)
 
-    # === НОВЫЕ МЕТОДЫ ДЛЯ АВТОТЕСТА ===
+    # === МЕТОДЫ ДЛЯ АВТОТЕСТА ===
     async def get_autotest_status(self, user_id: int) -> bool:
-        url = f"{self.base_url}/autotest/status/{user_id}"
+        url = f"{self.base_url}/api/v1/autotest/status/{user_id}"
         data = await self._request_with_retry("GET", url)
         return data.get("enabled", False)
 
     async def set_autotest_status(self, user_id: int, enabled: bool):
-        url = f"{self.base_url}/autotest/toggle/{user_id}"
+        url = f"{self.base_url}/api/v1/autotest/toggle/{user_id}"
         await self._request_with_retry("POST", url)

@@ -42,6 +42,7 @@ jobs:
             echo "ORCHESTRATOR_URL=http://orchestrator:8000" >> .env
             echo "WORKER_URL=http://worker:8000" >> .env
             echo "REDIS_URL=redis://redis:6379" >> .env
+            echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" > .env
 
             mkdir -p temp data
             docker compose down
