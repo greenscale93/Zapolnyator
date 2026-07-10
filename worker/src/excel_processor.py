@@ -88,8 +88,25 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 return {"status": "error", "error_message": f"Output file not found: {output_path}"}
             logger.info(f"Using existing output file: {output_path}")
 
+        # ======== ИЗМЕНЕНИЯ НАЧИНАЮТСЯ ЗДЕСЬ ========
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
+
+        # Очистка "денежных" колонок от пробелов и запятых до фильтрации и группировки
+        money_keywords = ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']
+        for col in df_source.columns:
+            if any(kw in col for kw in money_keywords):
+                # Убираем неразрывные и обычные пробелы, меняем запятую на точку
+                df_source[col] = (
+                    df_source[col]
+                    .astype(str)
+                    .str.replace(r'[\s\u00a0]', '', regex=True)
+                    .str.replace(',', '.')
+                )
+                # Преобразуем в число, некорректные станут NaN (потом при суммировании превратятся в 0)
+                df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
+
+        # ======== ДАЛЕЕ КОД БЕЗ ИЗМЕНЕНИЙ (кроме group_agg) ========
 
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
@@ -142,18 +159,18 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                             result[col] = group[col].iloc[0]
                         # Суммируем Оклад (только для Оплата труда)
                         if 'Оклад' in df_source.columns:
-                            ok_labor = group[group['ВидНачисленияЗП'] == 'Оплата труда']['Оклад'].astype(float).sum()
+                            ok_labor = group.loc[group['ВидНачисленияЗП'] == 'Оплата труда', 'Оклад'].sum()
                             result['Оклад'] = ok_labor
                         else:
                             result['Оклад'] = 0
                         # Суммируем Премию (все строки)
                         if 'Премия' in df_source.columns:
-                            result['Премия'] = group['Премия'].astype(float).sum()
+                            result['Премия'] = group['Премия'].sum()
                         else:
                             result['Премия'] = 0
                         # Комментарий: только из строк с Премия
                         if 'Комментарий' in df_source.columns:
-                            comments = group[group['ВидНачисленияЗП'] == 'Премия']['Комментарий'].dropna().astype(str).unique()
+                            comments = group.loc[group['ВидНачисленияЗП'] == 'Премия', 'Комментарий'].dropna().astype(str).unique()
                             result['Комментарий'] = "; ".join(comments)
                         else:
                             result['Комментарий'] = ""
@@ -200,6 +217,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 else:
                     if source_expr in row_dict:
                         val = row_dict[source_expr]
+                        # clean_number оставлен для подстраховки, но числа уже очищены
                         if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']):
                             val = clean_number(val)
                         new_row[target_col_idx] = val
