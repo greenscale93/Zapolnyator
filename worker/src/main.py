@@ -1,1 +1,7 @@
-from fastapi import FastAPI\napp=FastAPI()\n@app.get('/health')\nasync def health():\n    return {'status':'ok'}
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
