@@ -399,3 +399,11 @@ Excel-шаблон: {excel_path}
             "status": "error",
             "error": error_message
         })
+        
+    async def _load_rules(self) -> dict:
+        try:
+            with open("/app/rules.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Cannot load rules: {e}")
+            return {}

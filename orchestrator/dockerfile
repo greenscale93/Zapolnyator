@@ -10,3 +10,4 @@ COPY src/ ./src/
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 COPY INSTRUCTION.md /app/INSTRUCTION.md
+COPY rules.json /app/rules.json
