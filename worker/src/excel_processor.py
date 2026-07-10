@@ -53,12 +53,6 @@ async def read_excel_structure(file_path: str) -> dict:
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456") -> dict:
     """
     Применяет маппинг к указанному листу.
-    mapping может содержать:
-        - source_columns: dict {target_col_index: source_col_name_or_expression}  (индексы колонок, начиная с 1)
-        - append_to_end: bool (добавлять в конец)
-        - filters: dict {source_col: value} - фильтровать строки по точному совпадению (строковое сравнение)
-        - exclude_filters: dict {source_col: value} - исключить строки где value совпадает (строковое сравнение)
-        - header_row: int (номер строки с заголовками в шаблоне, по умолчанию 2)
     """
     try:
         # 1. Копируем шаблон
@@ -66,6 +60,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         output_filename = f"ДКП_10_-_{month}_{year}.xlsx"
         output_path = os.path.join(output_dir, output_filename)
         shutil.copy2(template_path, output_path)
+        logger.info(f"Template copied to {output_path}")
 
         # 2. Расшифровка
         if password:
@@ -78,6 +73,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                             file.decrypt(tmp)
                             tmp_path = tmp.name
                         shutil.move(tmp_path, output_path)
+                        logger.info("File decrypted")
             except Exception as e:
                 logger.warning(f"Decrypt failed: {e}")
 
@@ -85,7 +81,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # 4. Применяем фильтры (с приведением к строке)
+        # 4. Применяем фильтры
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
@@ -120,10 +116,21 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 del ws.tables[table_name]
                 logger.info(f"Removed table: {table_name}")
 
-        # 6. Определяем номер строки с заголовками в шаблоне (по умолчанию 2)
+        # 6. Определяем номер строки с заголовками в шаблоне
         header_row = mapping.get("header_row", 2)
+        # Проверяем, есть ли данные в этой строке
         if ws.cell(row=header_row, column=1).value is None:
-            header_row = 1
+            # Если нет, пробуем строку 1
+            if ws.cell(row=1, column=1).value is not None:
+                header_row = 1
+            else:
+                # Если и в первой строке пусто, создаём заголовки из колонок
+                header_row = 1
+                for col_idx, header in enumerate(df_source.columns, start=1):
+                    ws.cell(row=header_row, column=col_idx).value = header
+                logger.info(f"Created headers in row {header_row}")
+
+        logger.info(f"Header row: {header_row}")
 
         # 7. Подготавливаем данные для вставки
         source_cols = mapping.get("source_columns", {})
@@ -147,25 +154,36 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if not rows_to_insert:
             return {"status": "error", "error_message": "No data to insert"}
 
+        logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
+
         # 8. Вставляем строки
         if append:
+            # Находим последнюю заполненную строку после заголовков
             max_row = ws.max_row
             start_row = max_row + 1
+            # Пропускаем пустые строки в конце
             while start_row > header_row and ws.cell(row=start_row-1, column=1).value is None:
                 start_row -= 1
             if start_row <= header_row:
                 start_row = header_row + 1
         else:
+            # Если append=false, очищаем всё после заголовков
             if ws.max_row > header_row:
                 ws.delete_rows(header_row + 1, ws.max_row - header_row)
             start_row = header_row + 1
 
+        logger.info(f"Start row: {start_row}, number of rows to insert: {len(rows_to_insert)}")
+
+        # Записываем данные
         for i, row_dict in enumerate(rows_to_insert, start=start_row):
             for col_idx, value in row_dict.items():
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
+                    logger.debug(f"Set cell ({i}, {col_idx}) = {value}")
 
+        # Сохраняем
         wb.save(output_path)
+        logger.info(f"File saved: {output_path}")
 
         return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
     except Exception as e:
