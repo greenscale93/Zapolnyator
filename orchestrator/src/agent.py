@@ -5,6 +5,8 @@ from openai import AsyncOpenAI
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
 from src.worker_client import WorkerClient
+from typing import List, Dict, Any, Optional
+from src.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +15,7 @@ class OrchestratorAgent:
         self.session_manager = session_manager
         self.memory_store = memory_store
         self.worker_client = worker_client
+        self.notifier = TelegramNotifier()
         self.client = AsyncOpenAI(
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             base_url="https://api.deepseek.com/v1"
@@ -173,3 +176,7 @@ class OrchestratorAgent:
             "status": "error",
             "error": error_message
         })
+        # Отправляем уведомление в Telegram
+        await self.notifier.send_message(
+            f"❌ Ошибка в задаче {task_id}:\n{error_message}"
+        )
