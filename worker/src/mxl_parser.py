@@ -1,4 +1,3 @@
-import chardet
 import csv
 import os
 import logging
@@ -17,23 +16,25 @@ def extract_table_data(parsed_structure):
     return []
 
 async def parse_mxl(file_path: str) -> dict:
-    """
-    Парсит MXL-файл (текстовый формат 1С) и возвращает данные.
-    Автоопределение кодировки.
-    """
     if not os.path.exists(file_path):
         return {"status": "error", "error_message": f"File not found: {file_path}"}
     
     try:
-        # Определяем кодировку
-        with open(file_path, 'rb') as f:
-            raw = f.read(10000)
-            encoding = chardet.detect(raw)['encoding'] or 'utf-8'
-        logger.info(f"Detected encoding: {encoding}")
-        
-        # Читаем файл с определённой кодировкой
-        with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
-            content = f.read()
+        # Пробуем разные кодировки
+        encodings = ['cp1251', 'windows-1251', 'utf-8', 'koi8-r']
+        content = None
+        used_encoding = None
+        for enc in encodings:
+            try:
+                with open(file_path, 'r', encoding=enc, errors='ignore') as f:
+                    content = f.read()
+                    used_encoding = enc
+                    break
+            except:
+                continue
+        if content is None:
+            return {"status": "error", "error_message": "Cannot detect encoding"}
+        logger.info(f"Used encoding for MXL: {used_encoding}")
         
         # Ищем все строки вида {"#","значение"} или {"#","значение1","значение2"}
         pattern = r'\{"#"\s*,\s*"([^"]*)"(?:\s*,\s*"([^"]*)")?\s*\}'
@@ -42,7 +43,6 @@ async def parse_mxl(file_path: str) -> dict:
         if not matches:
             return {"status": "error", "error_message": "No data found in MXL file"}
         
-        # Первая строка — заголовки
         headers = []
         data_rows = []
         is_header = True
@@ -72,10 +72,6 @@ async def parse_mxl(file_path: str) -> dict:
         return {"status": "error", "error_message": str(e)}
 
 async def convert_mxl_to_csv(file_path: str) -> dict:
-    """
-    Конвертирует MXL-файл в CSV и сохраняет рядом.
-    Возвращает путь к CSV и сами данные.
-    """
     if not os.path.exists(file_path):
         return {"status": "error", "error_message": f"File not found: {file_path}"}
     
@@ -89,7 +85,6 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
         if not data:
             return {"status": "error", "error_message": "No data extracted from MXL"}
         
-        # Очищаем данные от ключей None
         cleaned_data = []
         for row in data:
             if isinstance(row, dict):
@@ -99,13 +94,11 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
                 cleaned_data.append(row)
         data = cleaned_data
         
-        # Определяем колонки
         if data and isinstance(data[0], dict):
             columns = list(data[0].keys())
         else:
             columns = []
         
-        # Генерируем CSV в UTF-8
         output = StringIO()
         if columns:
             writer = csv.DictWriter(output, fieldnames=columns, quoting=csv.QUOTE_MINIMAL)
@@ -126,9 +119,8 @@ async def convert_mxl_to_csv(file_path: str) -> dict:
         
         csv_data = output.getvalue()
         
-        # Сохраняем CSV с кодировкой UTF-8
         csv_path = file_path + ".csv"
-        with open(csv_path, 'w', encoding='utf-8') as f:
+        with open(csv_path, 'w', encoding='utf-8-sig') as f:
             f.write(csv_data)
         
         return {
