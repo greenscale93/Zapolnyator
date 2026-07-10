@@ -22,7 +22,6 @@ class OrchestratorAgent:
         logger.info("OrchestratorAgent initialized")
 
     def _load_instruction(self) -> str:
-        # Пытаемся загрузить из файла, если нет – используем встроенную
         try:
             with open("/app/INSTRUCTION.md", "r", encoding="utf-8") as f:
                 return f.read()
@@ -55,7 +54,7 @@ class OrchestratorAgent:
         samples = structure_result["result"]["samples"]
         total_rows = structure_result["result"]["total_rows"]
 
-        # 2. Формируем системный промпт с инструкцией и данными
+        # 2. Формируем системный промпт с инструкцией и данными, включая пути к файлам
         system_prompt = f"""
 Ты — ИИ-агент, который заполняет отчёт ДКП по данным из MXL-выгрузки.
 Вот инструкция, которой ты должен следовать:
@@ -70,12 +69,15 @@ class OrchestratorAgent:
 
 Всего строк: {total_rows}
 
+Пути к файлам (не спрашивай их у пользователя, они уже загружены):
+- MXL-файл: {mxl_path}
+- Excel-шаблон: {excel_path}
+
 Твоя задача — проанализировать данные и подготовить структуру для записи в Excel.
 Ты можешь использовать следующие инструменты (вызывай их через функцию call_tool):
-- get_mxl_structure — уже вызван, структура у тебя есть.
-- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}).
-- write_excel(template_path, sheets_data, password, output_path) — записывает данные.
-- read_excel_structure(file_path) — читает структуру Excel (листы и колонки).
+- filter_mxl_data(file_path, filters) — фильтрует данные по критериям (например, {{"Сценарий": "ФАКТ"}}). Используй {mxl_path} как file_path.
+- write_excel(template_path, sheets_data, password, output_path) — записывает данные. Используй {excel_path} как template_path.
+- read_excel_structure(file_path) — читает структуру Excel (листы и колонки). Используй {excel_path} как file_path.
 
 Также ты можешь запрашивать у пользователя уточнения через функцию ask_user(question, context).
 
@@ -219,6 +221,8 @@ class OrchestratorAgent:
         pending_args = state.get("pending_args", {})
         # Добавляем ответ пользователя в историю (сохраняем в сессии)
         history = state.get("history", [])
+        if not history:
+            history = []
         history.append({"role": "user", "content": answer})
         await self.session_manager.update_session(task_id, {
             "history": history,
