@@ -47,16 +47,6 @@ jobs:
             docker compose down
             docker compose up -d --build
 
-      - name: Check containers status
-        if: always()
-        run: |
-          STATUS=$(ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cd /home/${{ secrets.VPS_USER }}/Zapolnyator && docker compose ps --format json")
-          echo "$STATUS"
-          # Отправляем статус в Telegram
-          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
-            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-            -d text="📦 Статус контейнеров после деплоя: $STATUS"
-
       - name: Notify success
         if: success()
         run: |
