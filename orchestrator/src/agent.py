@@ -18,6 +18,7 @@ class OrchestratorAgent:
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.rules = self._load_rules()
         logger.info("OrchestratorAgent initialized")
+        print("DEBUG: OrchestratorAgent initialized")
 
     def _load_rules(self) -> dict:
         try:
@@ -50,7 +51,6 @@ class OrchestratorAgent:
             logger.error(f"Telegram send error: {e}")
 
     def _build_office_keyboard(self, offices: list, contractor: str):
-        """Создаёт inline-клавиатуру с офисами и кнопкой 'Чужой офис'"""
         keyboard = []
         row = []
         for office in offices:
@@ -65,9 +65,11 @@ class OrchestratorAgent:
 
     async def run_agent_cycle(self, task_id: str, resume_from_question: bool = False):
         logger.info(f"Starting agent cycle for task {task_id}")
+        print(f"DEBUG: run_agent_cycle started, task_id={task_id}, resume={resume_from_question}")
         state = await self.session_manager.get_session(task_id)
         if not state:
             logger.error(f"Task {task_id} not found")
+            print(f"DEBUG: no state for {task_id}")
             return
 
         user_id = state.get("user_id")
@@ -85,7 +87,6 @@ class OrchestratorAgent:
         sheets_mapping = self.rules.get("sheets", {})
         output_path = state.get("output_path")
 
-        # Обрабатываем все листы, кроме "Взаиморасчеты" (если не возобновляем)
         if not resume_from_question:
             for sheet_name, mapping in sheets_mapping.items():
                 if sheet_name == "Взаиморасчеты":
@@ -110,27 +111,31 @@ class OrchestratorAgent:
                 await self._send_telegram_message(user_id, f"✅ Лист {sheet_name} заполнен (добавлено строк: {rows_added}).")
                 await self.session_manager.update_session(task_id, {"output_path": output_path})
 
-        # Лист "Взаиморасчеты" с особым маппингом
+        # Лист "Взаиморасчеты"
         if "Взаиморасчеты" in sheets_mapping:
             vz_mapping = sheets_mapping["Взаиморасчеты"]
             await self._send_telegram_message(user_id, "📝 Заполняю лист: Взаиморасчеты...")
 
-            # Получаем пустых контрагентов
             try:
                 empty_contractors = await self.worker_client.get_empty_vz_contractors(data_file_path)
+                print(f"DEBUG: empty_contractors = {empty_contractors}")
             except Exception as e:
+                logger.exception("Failed to get empty contractors")
                 await self._set_error(task_id, str(e))
                 await self._send_telegram_message(user_id, f"❌ Ошибка получения данных: {str(e)}")
                 return
 
             saved_mapping = get_mapping_dict()
+            print(f"DEBUG: saved_mapping = {saved_mapping}")
             unknown = [c for c in empty_contractors if c not in saved_mapping]
+            print(f"DEBUG: unknown = {unknown}")
 
             if unknown and not resume_from_question:
-                # Получаем список офисов из шаблона через Worker
                 try:
                     offices = await self.worker_client.get_template_offices(excel_path)
+                    print(f"DEBUG: offices = {offices}")
                 except Exception as e:
+                    logger.exception("Failed to get template offices")
                     await self._set_error(task_id, f"Ошибка чтения шаблона: {str(e)}")
                     await self._send_telegram_message(user_id, f"❌ Ошибка чтения шаблона: {str(e)}")
                     return
@@ -151,7 +156,7 @@ class OrchestratorAgent:
                     reply_markup=reply_markup)
                 return  # ждём ответа
 
-            # Если неизвестных нет или все отвечены, запускаем apply_sheet_mapping
+            # Все известны или ответы получены – запускаем apply
             vz_mapping_copy = dict(vz_mapping)
             vz_mapping_copy["custom_processing"] = dict(vz_mapping["custom_processing"])
             vz_mapping_copy["custom_processing"]["office_mapping"] = saved_mapping
@@ -175,7 +180,6 @@ class OrchestratorAgent:
             await self._send_telegram_message(user_id, f"✅ Лист Взаиморасчеты заполнен (добавлено строк: {rows_added}).")
             await self.session_manager.update_session(task_id, {"output_path": output_path})
 
-        # Завершение
         if output_path:
             await self._send_telegram_message(user_id, "✅ Обработка завершена! Файл будет отправлен.")
             await self.session_manager.update_session(task_id, {
@@ -187,13 +191,11 @@ class OrchestratorAgent:
             await self._set_error(task_id, "No output file generated")
 
     async def handle_answer(self, task_id: str, answer_data: str):
-        """Обработка inline-ответа на вопрос маппинга"""
         parts = answer_data.split("|")
         if len(parts) != 3 or parts[0] != "map_office":
             return
         contractor = parts[1]
         selected_office = parts[2]
-
         set_mapping(contractor, selected_office)
 
         state = await self.session_manager.get_session(task_id)
@@ -223,11 +225,8 @@ class OrchestratorAgent:
                     }
                 })
             else:
-                # Все вопросы заданы – продолжаем обработку
                 await self.session_manager.update_session(task_id, {"status": "running", "question": None})
                 asyncio.create_task(self.run_agent_cycle(task_id, resume_from_question=True))
-        else:
-            logger.error(f"Answer mismatch: expected {contractors[current_idx]}, got {contractor}")
 
     async def edit_mapping_command(self, user_id: int):
         mappings = get_all_mappings()

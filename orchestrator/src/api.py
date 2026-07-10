@@ -1,17 +1,16 @@
-import os
 import uuid
 import asyncio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
 from src.worker_client import WorkerClient
 from src.agent import OrchestratorAgent
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Глобальные объекты
 session_manager = SessionManager()
 memory_store = MemoryStore()
 worker_client = WorkerClient()
@@ -19,7 +18,7 @@ agent = OrchestratorAgent(session_manager, memory_store, worker_client)
 
 class CreateTaskRequest(BaseModel):
     user_id: int
-    files: dict  # {"excel": path, "data": path}
+    files: dict
     month: str = "Май"
     year: int = 2026
 
@@ -33,8 +32,6 @@ class DeleteMappingRequest(BaseModel):
     task_id: str
     contractor: str
 
-# ================== ЗАДАЧИ ==================
-
 @router.post("/api/v1/task")
 async def create_task(request: CreateTaskRequest):
     task_id = str(uuid.uuid4())
@@ -45,7 +42,7 @@ async def create_task(request: CreateTaskRequest):
         month=request.month,
         year=request.year
     )
-    # Запускаем обработку в фоне
+    logger.info(f"Task {task_id} created, starting agent")
     asyncio.create_task(agent.run_agent_cycle(task_id))
     return {"task_id": task_id}
 
@@ -66,8 +63,6 @@ async def stop_task(task_id: str):
     await agent.stop_task(task_id)
     return {"status": "cancelled"}
 
-# ================== АВТОТЕСТ ==================
-
 @router.get("/api/v1/autotest/status/{user_id}")
 async def get_autotest_status(user_id: int):
     enabled = await session_manager.get_auto_test_status(user_id)
@@ -79,8 +74,6 @@ async def toggle_autotest(user_id: int):
     new_status = not current
     await session_manager.set_auto_test_status(user_id, new_status)
     return {"enabled": new_status}
-
-# ================== МАППИНГ (НОВЫЕ) ==================
 
 @router.post("/api/v1/edit_mapping")
 async def edit_mapping(request: EditMappingRequest):
