@@ -50,6 +50,17 @@ async def read_excel_structure(file_path: str) -> dict:
         logger.exception("read_excel_structure error")
         return {"status": "error", "error_message": str(e)}
 
+def clean_number(value):
+    """Очищает строку от неразрывных пробелов и преобразует в число."""
+    if isinstance(value, str):
+        # Удаляем неразрывные пробелы и заменяем запятую на точку
+        cleaned = value.replace('\u00a0', '').replace(',', '.').strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return value
+    return value
+
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456") -> dict:
     try:
         # 1. Копируем шаблон
@@ -108,7 +119,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         # 6. Определяем строку с заголовками (используем существующую вторую строку)
         header_row = mapping.get("header_row", 2)
-        # Проверяем, есть ли данные в этой строке, если нет – оставляем как есть
         logger.info(f"Header row: {header_row}")
 
         # 7. Подготавливаем данные для вставки
@@ -125,7 +135,11 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                     new_row[target_col_idx] = f"{month} {year}"
                 else:
                     if source_expr in df_source.columns:
-                        new_row[target_col_idx] = row[source_expr]
+                        val = row[source_expr]
+                        # Если колонка числовая (по названию) — чистим
+                        if any(keyword in source_expr for keyword in ['Сумма', 'Ставка', 'Оклад', 'Премия', 'НДС']):
+                            val = clean_number(val)
+                        new_row[target_col_idx] = val
                     else:
                         new_row[target_col_idx] = None
             rows_to_insert.append(new_row)
@@ -135,11 +149,10 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # 8. Вставляем строки ПОСЛЕ последней существующей строки (не после заголовков!)
+        # 8. Вставляем строки ПОСЛЕ последней существующей строки
         if append:
-            # Находим последнюю строку с любыми данными (не только в колонке A)
+            # Находим последнюю строку с любыми данными (по всем колонкам)
             last_row = ws.max_row
-            # Ищем последнюю непустую строку
             while last_row > 0:
                 row_has_data = False
                 for col in range(1, ws.max_column + 1):
@@ -150,6 +163,9 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                     break
                 last_row -= 1
             start_row = last_row + 1
+            # Если start_row меньше header_row+1, то данных нет, вставляем после заголовка
+            if start_row <= header_row:
+                start_row = header_row + 1
         else:
             # Если не append, очищаем всё после заголовков
             if ws.max_row > header_row:

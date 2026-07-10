@@ -2,7 +2,9 @@ import os
 import logging
 import asyncio
 import json
-from aiogram import Router, F, types, Bot
+import re
+from datetime import datetime
+from aiogram import Router, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,13 +15,10 @@ from src.client import OrchestratorClient
 router = Router()
 logger = logging.getLogger(__name__)
 
-# === НАСТРОЙКИ АВТОТЕСТА ===
+# === НАСТРОЙКИ ===
 AUTO_TEST = os.getenv("AUTO_TEST", "false").lower() == "true"
 TEMP_DIR = os.getenv("TEMP_DIR", "/app/temp")
 LAST_FILES_PATH = os.path.join(TEMP_DIR, "last_files.json")
-AUTO_START_CHAT_ID = os.getenv("AUTO_START_CHAT_ID")
-if AUTO_START_CHAT_ID:
-    AUTO_START_CHAT_ID = int(AUTO_START_CHAT_ID)
 
 class WaitingState(StatesGroup):
     answer = State()
@@ -42,6 +41,25 @@ def _get_last_files():
     except Exception as e:
         logger.warning(f"Could not read last files: {e}")
     return None, None
+
+def extract_month_year_from_filename(filename: str) -> tuple:
+    """
+    Извлекает год и месяц из имени файла вида "ВыгрузкаДляExcel_2026-06"
+    Возвращает (month_name, year_int)
+    """
+    pattern = r'ВыгрузкаДляExcel[_\-]?(\d{4})[-_](\d{2})'
+    match = re.search(pattern, filename)
+    if match:
+        year = int(match.group(1))
+        month_num = int(match.group(2))
+        months_ru = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+        month_name = months_ru.get(month_num, "Май")
+        return month_name, year
+    return "Май", 2026  # fallback
 
 @router.message(Command("start", "help"))
 async def cmd_start(message: Message, state: FSMContext):
@@ -94,7 +112,10 @@ async def handle_document(message: Message, state: FSMContext):
             return
         file_path = await save_document(doc, "data")
         await state.update_data(data_path=file_path)
-        await message.answer(f"✅ Файл с данными «{file_name}» сохранён.")
+        # Извлекаем месяц и год из имени файла
+        month, year = extract_month_year_from_filename(file_name)
+        await state.update_data(month=month, year=year)
+        await message.answer(f"✅ Файл с данными «{file_name}» сохранён (Месяц: {month}, Год: {year}).")
         if not excel_path:
             await message.answer("Ожидаю шаблон Excel (например, 'ДКП 10 - май 2026.xlsx').")
     else:
@@ -118,9 +139,10 @@ async def handle_document(message: Message, state: FSMContext):
 async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
     _save_last_files(excel_path, data_path)
     client = OrchestratorClient()
+    data = await state.get_data()
+    month = data.get("month", "Май")
+    year = data.get("year", 2026)
     try:
-        month = "Май"
-        year = 2026
         task_id = await client.create_task(
             user_id=message.from_user.id,
             excel_path=excel_path,
@@ -213,60 +235,3 @@ async def save_document(doc: types.Document, prefix: str) -> str:
 
 def register_handlers(dp):
     dp.include_router(router)
-
-# === АВТОМАТИЧЕСКИЙ ЗАПУСК ПОСЛЕ СТАРТА БОТА ===
-async def auto_start_processing(bot: Bot):
-    """Автоматически запускает обработку через 5 секунд после старта бота, если включён AUTO_TEST и задан AUTO_START_CHAT_ID."""
-    if not AUTO_TEST:
-        return
-    if not AUTO_START_CHAT_ID:
-        logger.warning("AUTO_TEST включён, но AUTO_START_CHAT_ID не задан. Автозапуск отключён.")
-        return
-    await asyncio.sleep(5)
-    logger.info(f"Автоматический запуск обработки для chat_id={AUTO_START_CHAT_ID}")
-    excel_path, data_path = _get_last_files()
-    if not excel_path or not data_path:
-        logger.warning("Нет сохранённых файлов для автозапуска.")
-        await bot.send_message(AUTO_START_CHAT_ID, "⚠️ Нет сохранённых файлов для автозапуска. Отправьте файлы вручную.")
-        return
-    if not os.path.exists(excel_path) or not os.path.exists(data_path):
-        logger.warning("Сохранённые файлы не существуют.")
-        await bot.send_message(AUTO_START_CHAT_ID, "⚠️ Сохранённые файлы не найдены на сервере. Отправьте файлы вручную.")
-        return
-    
-    # Создаём задачу напрямую через клиент
-    client = OrchestratorClient()
-    try:
-        month = "Май"
-        year = 2026
-        task_id = await client.create_task(
-            user_id=AUTO_START_CHAT_ID,
-            excel_path=excel_path,
-            data_path=data_path,
-            month=month,
-            year=year
-        )
-        await bot.send_message(AUTO_START_CHAT_ID, f"✅ Автоматически создана задача (ID: {task_id}). Начинаю обработку...")
-        # Запускаем опрос статуса — для этого нужен объект Message и State. Создадим фейковый Message.
-        # Создаём фейковое сообщение для использования с poll_task_status
-        fake_message = types.Message(
-            message_id=0,
-            date=0,
-            chat=types.Chat(id=AUTO_START_CHAT_ID, type="private"),
-            from_user=types.User(id=AUTO_START_CHAT_ID, is_bot=False, first_name="AutoTest"),
-            text="/start",
-            bot=bot
-        )
-        # Создаём временное состояние (хранилище в памяти)
-        from aiogram.fsm.storage.memory import MemoryStorage
-        storage = MemoryStorage()
-        from aiogram.fsm.context import FSMContext
-        from aiogram.dispatcher.dispatcher import Dispatcher
-        dp = Dispatcher(storage=storage)
-        state = FSMContext(dp, storage=storage, key=AUTO_START_CHAT_ID)
-        # Сохраняем task_id в состояние
-        await state.update_data(task_id=task_id)
-        # Запускаем опрос статуса
-        asyncio.create_task(poll_task_status(fake_message, state, task_id))
-    except Exception as e:
-        await bot.send_message(AUTO_START_CHAT_ID, f"❌ Ошибка автоматического запуска: {str(e)}")
