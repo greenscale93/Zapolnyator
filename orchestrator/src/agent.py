@@ -79,11 +79,9 @@ class OrchestratorAgent:
         output_path = None
         for sheet_name, mapping in sheets_mapping.items():
             await self._send_telegram_message(user_id, f"📝 Заполняю лист: {sheet_name}...")
-            # Если output_path уже есть, используем его как шаблон
-            template_to_use = output_path if output_path else excel_path
             result = await self.worker_client.call_tool("apply_sheet_mapping", {
                 "source_path": data_file_path,
-                "template_path": template_to_use,
+                "template_path": excel_path if not output_path else output_path,
                 "sheet_name": sheet_name,
                 "mapping": mapping,
                 "month": month,
@@ -95,7 +93,7 @@ class OrchestratorAgent:
                 await self._send_telegram_message(user_id, f"❌ Ошибка при заполнении листа {sheet_name}: {result.get('error_message')}")
                 return
             output_path = result["result"]["output_path"]
-            await self._send_telegram_message(user_id, f"✅ Лист {sheet_name} заполнен.")
+            await self._send_telegram_message(user_id, f"✅ Лист {sheet_name} заполнен (добавлено строк: {result.get('rows_added', 'неизвестно')}).")
 
         if output_path:
             await self._send_telegram_message(
@@ -111,21 +109,12 @@ class OrchestratorAgent:
         else:
             await self._set_error(task_id, "No output file generated")
 
-    async def approve_llm_request(self, task_id: str):
-        pass
-
-    async def cancel_llm_request(self, task_id: str):
-        pass
-
     async def stop_task(self, task_id: str):
         await self.session_manager.update_session(task_id, {
             "status": "cancelled",
             "error": "Остановлено пользователем"
         })
         logger.info(f"Task {task_id} stopped by user")
-
-    async def process_answer(self, task_id: str, answer: str):
-        pass
 
     async def _set_error(self, task_id: str, error_message: str):
         logger.error(f"Task {task_id} error: {error_message}")
