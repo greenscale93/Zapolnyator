@@ -89,9 +89,9 @@ class OrchestratorAgent:
         
         user_id = state.get("user_id")
         files = state.get("files", {})
-        data_file_path = files.get("data")  # теперь это может быть MXL или XLSX
-        template_path = files.get("excel")
-        if not data_file_path or not template_path:
+        data_file_path = files.get("data")
+        excel_path = files.get("excel")
+        if not data_file_path or not excel_path:
             await self._set_error(task_id, "Missing file paths")
             await self._send_telegram_message(user_id, "❌ Ошибка: отсутствуют пути к файлам.")
             return
@@ -99,7 +99,7 @@ class OrchestratorAgent:
         month = state.get("month", "Май")
         year = state.get("year", 2026)
 
-        # Определяем тип файла и читаем данные
+        # 1. Читаем данные (Excel или MXL)
         if data_file_path.lower().endswith(('.xlsx', '.xls')):
             await self._send_telegram_message(user_id, "📊 Читаю данные из Excel...")
             read_result = await self.worker_client.call_tool("read_excel_data", {"file_path": data_file_path})
@@ -111,6 +111,8 @@ class OrchestratorAgent:
             columns = read_result["result"]["columns"]
             total_rows = read_result["result"]["rows"]
             data_source = "Excel"
+            # Для filter_mxl_data нужен путь к файлу
+            data_path_for_tool = data_file_path
         else:
             # MXL — конвертируем в CSV
             await self._send_telegram_message(user_id, "🔄 Конвертирую MXL в CSV...")
@@ -120,56 +122,47 @@ class OrchestratorAgent:
                 await self._send_telegram_message(user_id, f"❌ Ошибка конвертации MXL: {convert_result.get('error_message')}")
                 return
             csv_path = convert_result["result"]["csv_path"]
-            data = convert_result["result"]["csv_data"]  # строка CSV
             columns = convert_result["result"]["columns"]
             total_rows = convert_result["result"]["rows"]
             data_source = "MXL (преобразован в CSV)"
+            data_path_for_tool = csv_path
             # Отправляем CSV-файл пользователю
             await self._send_telegram_message(
                 user_id,
-                f"📄 CSV-файл создан ({total_rows} строк, {convert_result['result']['size_bytes']} байт). Отправляю файл.",
+                f"📄 CSV-файл создан ({total_rows} строк). Отправляю файл.",
                 file_path=csv_path
             )
 
-        # Если данные — список словарей, берём их напрямую; если строка CSV — передаём путь
-        if isinstance(data, list):
-            preview = data[:5] if len(data) > 5 else data
-            data_preview = preview
-            data_path_for_tool = data_file_path  # для filter_mxl_data будем использовать путь к файлу
-        else:
-            # data — это CSV-строка, но мы уже сохранили CSV-файл (csv_path)
-            data_path_for_tool = csv_path if 'csv_path' in locals() else data_file_path
-            preview = []  # не можем показать примеры из строки
-
-        # Читаем структуру Excel
+        # 2. Читаем структуру Excel-шаблона
         await self._send_telegram_message(user_id, "🔍 Читаю структуру Excel...")
-        excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": template_path})
+        excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": excel_path})
         if excel_struct.get("status") == "error":
             await self._set_error(task_id, excel_struct.get("error_message"))
             await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {excel_struct.get('error_message')}")
             return
 
-        # Формируем системный промпт
+        # 3. Формируем системный промпт
         system_prompt = f"""
 Ты — ИИ-агент, который заполняет отчёт ДКП по данным из выгрузки.
 Источник данных: {data_source}.
 Колонки: {columns}
 Всего строк: {total_rows}
-Данные уже загружены на сервер и доступны по пути: {data_path_for_tool}
-Excel-шаблон: {template_path}
+Данные доступны по пути: {data_path_for_tool}
+Excel-шаблон: {excel_path}
 Месяц: {month}, год: {year}.
 
 Инструкция:
 {self.instruction}
 
 Ты можешь использовать инструменты:
-- filter_mxl_data(file_path, filters) — фильтрует данные по колонкам. file_path = {data_path_for_tool}. filters — словарь с колонками и значениями. Используй этот инструмент ДЛЯ ПОЛУЧЕНИЯ ДАННЫХ ПО ТИПАМ ЗАПИСЕЙ (Реализация, Оплата, Взаиморасчет, НачислениеЗарплаты, ФактическийФОТ).
+- filter_mxl_data(file_path, filters) — фильтрует данные по колонкам. file_path = {data_path_for_tool}. filters — словарь с колонками и значениями.
 - write_excel(template_path, sheets_data, password, output_path) — записывает данные в Excel.
 - read_excel_structure — уже вызван.
 
 Порядок действий:
-1. Определи соответствие колонок: ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д. (смотри по названиям).
-2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО. Делай ОТДЕЛЬНЫЕ ВЫЗОВЫ filter_mxl_data для каждого типа записи:
+1. Определи соответствие колонок (ТипЗаписи, Сценарий, Подразделение, СуммаБезНДС и т.д.).
+2. Примени фильтры: Сценарий="ФАКТ", исключи Подразделение="ГКП 10.6 (Емельянова)", исключи ВГО.
+   Делай ОТДЕЛЬНЫЕ ВЫЗОВЫ filter_mxl_data для каждого типа записи:
    - {{"ТипЗаписи": "Реализация", "Сценарий": "ФАКТ"}}
    - {{"ТипЗаписи": "Оплата", "Сценарий": "ФАКТ"}}
    - {{"ТипЗаписи": "Взаиморасчет", "Сценарий": "ФАКТ"}}
@@ -180,7 +173,7 @@ Excel-шаблон: {template_path}
 5. Вызови write_excel.
 6. Вычисли показатели.
 
-НЕ ДЕЛАЙ ЛИШНИХ ВЫЗОВОВ filter_mxl_data. Используй только для получения данных по типам.
+НЕ ДЕЛАЙ ЛИШНИХ ВЫЗОВОВ. Используй filter_mxl_data только для получения данных по типам.
 """
 
         # Сохраняем промпт в файл для утверждения
@@ -212,7 +205,7 @@ Excel-шаблон: {template_path}
         pending = self.pending_approval.pop(task_id)
         user_id = pending["user_id"]
         history = pending["history"]
-        await self._send_telegram_message(user_id, "✅ Запрос к LLM одобрен. Начинаю обработку...")
+        await self._send_telegram_message(user_id, "✅ Запрос к LLM одобрен. Начинаю обработку... Это может занять некоторое время, пожалуйста, ожидайте.")
         await self._run_llm_cycle(task_id, history, user_id)
 
     async def cancel_llm_request(self, task_id: str):
@@ -255,12 +248,14 @@ Excel-шаблон: {template_path}
                         }
                     }
                 ]
+                # Проверка размера истории
                 history_str = json.dumps(history, ensure_ascii=False, default=str)
                 if len(history_str) > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
                     await self._send_telegram_message(user_id, f"⚠️ История слишком большая. Сохранена в файл.", file_path=debug_file)
                     history = [history[0]] + history[-3:]
                 
+                await self._send_telegram_message(user_id, f"⏳ Отправляю запрос в DeepSeek (итерация {iteration})...")
                 response = await self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=history,
