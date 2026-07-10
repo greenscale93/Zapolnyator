@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import uuid
 import logging
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 
 from src.agent import OrchestratorAgent
 from src.session_manager import SessionManager
@@ -13,6 +13,7 @@ from src.worker_client import WorkerClient
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
 
+# Инициализация зависимостей
 session_manager = SessionManager()
 memory_store = MemoryStore()
 worker_client = WorkerClient()
@@ -20,7 +21,7 @@ agent = OrchestratorAgent(session_manager, memory_store, worker_client)
 
 class TaskCreateRequest(BaseModel):
     user_id: int
-    files: Dict[str, str]
+    files: Dict[str, str]   # ожидаем ключи "excel" (шаблон) и "data" (файл с данными)
     month: str
     year: int
 
@@ -29,17 +30,26 @@ class TaskAnswerRequest(BaseModel):
 
 @router.post("/task")
 async def create_task(request: TaskCreateRequest):
+    # Проверяем наличие необходимых ключей
+    if "excel" not in request.files or "data" not in request.files:
+        raise HTTPException(status_code=400, detail="Missing file keys: 'excel' and 'data' are required")
+    
     task_id = str(uuid.uuid4())
     logger.info(f"Создана задача {task_id} для пользователя {request.user_id}")
+    logger.info(f"Шаблон: {request.files['excel']}, Данные: {request.files['data']}")
+    
+    # Сохраняем начальное состояние
     await session_manager.init_session(
         task_id,
         request.user_id,
-        request.files,
+        request.files,  # передаём весь словарь
         request.month,
         request.year
     )
-    # Запускаем агента в фоне
+    
+    # Запускаем обработку в фоне
     asyncio.create_task(agent.run_agent_cycle(task_id))
+    
     return {"task_id": task_id, "status": "accepted"}
 
 @router.get("/task/{task_id}")
@@ -47,6 +57,7 @@ async def get_task_status(task_id: str):
     state = await session_manager.get_session(task_id)
     if not state:
         raise HTTPException(status_code=404, detail="Task not found")
+    
     response = {
         "task_id": task_id,
         "status": state.get("status", "processing"),
@@ -69,6 +80,7 @@ async def answer_question(task_id: str, request: TaskAnswerRequest):
         raise HTTPException(status_code=404, detail="Task not found")
     if state.get("status") != "waiting_question":
         raise HTTPException(status_code=400, detail="Not waiting for question")
+    
     await agent.process_answer(task_id, request.answer)
     return {"status": "ok"}
 

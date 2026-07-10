@@ -90,8 +90,8 @@ class OrchestratorAgent:
         user_id = state.get("user_id")
         files = state.get("files", {})
         data_file_path = files.get("data")  # теперь это может быть MXL или XLSX
-        excel_path = files.get("excel")
-        if not data_file_path or not excel_path:
+        template_path = files.get("excel")
+        if not data_file_path or not template_path:
             await self._set_error(task_id, "Missing file paths")
             await self._send_telegram_message(user_id, "❌ Ошибка: отсутствуют пути к файлам.")
             return
@@ -143,7 +143,7 @@ class OrchestratorAgent:
 
         # Читаем структуру Excel
         await self._send_telegram_message(user_id, "🔍 Читаю структуру Excel...")
-        excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": excel_path})
+        excel_struct = await self.worker_client.call_tool("read_excel_structure", {"file_path": template_path})
         if excel_struct.get("status") == "error":
             await self._set_error(task_id, excel_struct.get("error_message"))
             await self._send_telegram_message(user_id, f"❌ Ошибка чтения Excel: {excel_struct.get('error_message')}")
@@ -156,7 +156,7 @@ class OrchestratorAgent:
 Колонки: {columns}
 Всего строк: {total_rows}
 Данные уже загружены на сервер и доступны по пути: {data_path_for_tool}
-Excel-шаблон: {excel_path}
+Excel-шаблон: {template_path}
 Месяц: {month}, год: {year}.
 
 Инструкция:

@@ -20,9 +20,9 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Привет! Отправьте мне два файла:\n"
-        "1. Excel-отчёт (шаблон)\n"
-        "2. MXL-выгрузку из 1С\n\n"
-        "Вы можете отправить их одновременно (одним сообщением) или по очереди."
+        "1. Шаблон отчёта (Excel) – например, 'ДКП 10 - май 2026.xlsx'\n"
+        "2. Выгрузка данных (Excel) – имя должно содержать 'ВыгрузкаДляExcel'\n\n"
+        "Вы можете отправлять их в любом порядке."
     )
 
 @router.message(Command("reset"))
@@ -30,57 +30,110 @@ async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
 
+@router.message(Command("approve"))
+async def cmd_approve(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для подтверждения.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.approve_llm(task_id)
+        await message.answer("✅ Запрос одобрен. Продолжаю обработку...")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для отмены.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.cancel_llm(task_id)
+        await message.answer("✅ Запрос отменён.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("stop"))
+async def cmd_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для остановки.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.stop_task(task_id)
+        await message.answer("⏹️ Задача остановлена.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
     doc = message.document
     file_name = doc.file_name or "unknown"
     ext = os.path.splitext(file_name)[1].lower()
+    # Проверяем допустимые расширения
+    if ext not in ['.xlsx', '.xls', '.mxl']:
+        await message.answer("Поддерживаются только файлы .xlsx, .xls, .mxl")
+        return
 
     data = await state.get_data()
-    excel_path = data.get("excel_path")
+    template_path = data.get("template_path")
     data_path = data.get("data_path")
 
-    if excel_path and data_path:
+    # Определяем тип файла по имени
+    is_data_file = "выгрузка" in file_name.lower() or "выгрузкадляexcel" in file_name.lower()
+    is_template_file = not is_data_file
+
+    # Если оба файла уже загружены, но пользователь пытается загрузить ещё
+    if template_path and data_path:
         await message.answer("Вы уже загрузили оба файла. Начинаю обработку...")
-        await start_processing(message, state, excel_path, data_path)
+        await start_processing(message, state, template_path, data_path)
         return
 
-    if ext in ['.xlsx', '.xls']:
-        if excel_path:
-            await message.answer("Excel-файл уже был загружен. Если хотите заменить, отправьте новый.")
-            return
-        file_path = await save_document(doc, "excel")
-        await state.update_data(excel_path=file_path)
-        await message.answer(f"✅ Excel-файл «{file_name}» сохранён.")
-    elif ext == '.mxl':
+    # Если это файл с данными
+    if is_data_file:
         if data_path:
-            await message.answer("MXL-файл уже был загружен. Если хотите заменить, отправьте новый.")
+            await message.answer("Файл с данными уже был загружен. Если хотите заменить, отправьте новый.")
             return
-        file_path = await save_document(doc, "mxl")
+        file_path = await save_document(doc, "data")
         await state.update_data(data_path=file_path)
-        await message.answer(f"✅ MXL-файл «{file_name}» сохранён.")
+        await message.answer(f"✅ Файл с данными «{file_name}» сохранён.")
     else:
-        await message.answer("Неизвестный формат. Пожалуйста, отправьте Excel (.xlsx/.xls) или MXL (.mxl) файл.")
-        return
+        # Это шаблон
+        if template_path:
+            await message.answer("Шаблон уже был загружен. Если хотите заменить, отправьте новый.")
+            return
+        file_path = await save_document(doc, "template")
+        await state.update_data(template_path=file_path)
+        await message.answer(f"✅ Шаблон отчёта «{file_name}» сохранён.")
 
+    # Проверяем, загружены ли оба файла
     data = await state.get_data()
-    if data.get("excel_path") and data.get("data_path"):
+    if data.get("template_path") and data.get("data_path"):
         await message.answer("✅ Оба файла успешно загружены на сервер!")
-        await start_processing(message, state, data["excel_path"], data["data_path"])
+        await start_processing(message, state, data["template_path"], data["data_path"])
     else:
-        if not data.get("excel_path"):
-            await message.answer("Ожидаю Excel-файл (.xlsx/.xls).")
+        if not data.get("template_path"):
+            await message.answer("Ожидаю шаблон Excel (например, 'ДКП 10 - май 2026.xlsx').")
         if not data.get("data_path"):
-            await message.answer("Ожидаю MXL-файл (.mxl).")
+            await message.answer("Ожидаю файл с данными (имя должно содержать 'ВыгрузкаДляExcel').")
 
-async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
+async def start_processing(message: Message, state: FSMContext, template_path: str, data_path: str):
     client = OrchestratorClient()
     try:
         task_id = await client.create_task(
             user_id=message.from_user.id,
-            excel_path=excel_path,
+            template_path=template_path,
             data_path=data_path,
-            month="Май",
+            month="Май",  # можно вынести в параметры
             year=2026
         )
     except Exception as e:
@@ -165,51 +218,6 @@ async def save_document(doc: types.Document, prefix: str) -> str:
     async with aio_open(file_path, "wb") as f:
         await f.write(downloaded_file.read())
     return file_path
-
-@router.message(Command("approve"))
-async def cmd_approve(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для подтверждения.")
-        return
-    # Отправляем сигнал в Orchestrator
-    client = OrchestratorClient()
-    try:
-        await client.approve_llm(task_id)
-        await message.answer("✅ Запрос одобрен. Продолжаю обработку...")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-
-@router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для отмены.")
-        return
-    client = OrchestratorClient()
-    try:
-        await client.cancel_llm(task_id)
-        await message.answer("✅ Запрос отменён.")
-        await state.clear()
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-
-@router.message(Command("stop"))
-async def cmd_stop(message: Message, state: FSMContext):
-    data = await state.get_data()
-    task_id = data.get("task_id")
-    if not task_id:
-        await message.answer("❌ Нет активной задачи для остановки.")
-        return
-    client = OrchestratorClient()
-    try:
-        await client.stop_task(task_id)
-        await message.answer("⏹️ Задача остановлена.")
-        await state.clear()
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
 
 def register_handlers(dp):
     dp.include_router(router)

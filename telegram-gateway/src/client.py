@@ -36,7 +36,7 @@ class OrchestratorClient:
             "user_id": user_id,
             "files": {
                 "excel": excel_path,
-                "mxl": data_path
+                "data": data_path
             },
             "month": month,
             "year": year
