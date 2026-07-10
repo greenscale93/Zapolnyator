@@ -1,0 +1,24 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 1234567..abcdefg 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -80,7 +80,16 @@ jobs:
+       - name: Notify success
+         if: success()
+         run: |
+-          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+-            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+-            -d text="✅ Деплой успешен! Контейнеры перезапущены и работают.\n\nДоступные команды:\n/start - начать работу\n/reset - сбросить состояние\n/autotest - включить/выключить автотест\n/stop - остановить текущую задачу"
++          MESSAGE=$(cat <<'EOF'
++          ✅ Деплой успешен! Контейнеры перезапущены и работают.
++
++          Доступные команды:
++          /start - начать работу
++          /reset - сбросить состояние
++          /autotest - включить/выключить автотест
++          /stop - остановить текущую задачу
++          EOF
++          )
++          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
++            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
++            --data-urlencode "text=$MESSAGE"
