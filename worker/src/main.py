@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import re
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
@@ -17,9 +18,20 @@ class ToolRequest(BaseModel):
     arguments: Dict[str, Any]
 
 class ToolResponse(BaseModel):
-    status: str  # "success" | "error"
+    status: str
     result: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+
+def sanitize_data(data):
+    """Рекурсивно удаляет управляющие символы из строк."""
+    if isinstance(data, str):
+        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', data)
+    elif isinstance(data, dict):
+        return {sanitize_data(k): sanitize_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_data(item) for item in data]
+    else:
+        return data
 
 @app.post("/api/v1/tool")
 async def call_tool(request: ToolRequest):
@@ -37,40 +49,36 @@ async def call_tool(request: ToolRequest):
                 return ToolResponse(status="error", error_message=result.get("error_message"))
             return ToolResponse(status="success", result=result.get("result"))
         
-        elif request.tool == "get_mxl_structure":
-            file_path = request.arguments["file_path"]
-            parsed = await parse_mxl(file_path)
-            if parsed.get("status") == "error":
-                return ToolResponse(status="error", error_message=parsed.get("error_message"))
-            data = parsed["result"]["data"]
-            columns = parsed["result"]["columns"]
-            samples = data[:10] if data else []
-            return ToolResponse(status="success", result={
-                "columns": columns,
-                "samples": samples,
-                "total_rows": len(data)
-            })
-        
         elif request.tool == "filter_mxl_data":
             file_path = request.arguments["file_path"]
             filters = request.arguments.get("filters", {})
-            parsed = await parse_mxl(file_path)
-            if parsed.get("status") == "error":
-                return ToolResponse(status="error", error_message=parsed.get("error_message"))
-            data = parsed["result"]["data"]
+            # Если файл CSV, читаем его
+            if file_path.endswith('.csv'):
+                import csv
+                data = []
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    data = list(reader)
+            else:
+                parsed = await parse_mxl(file_path)
+                if parsed.get("status") == "error":
+                    return ToolResponse(status="error", error_message=parsed.get("error_message"))
+                data = parsed["result"]["data"]
+            
+            # Применяем фильтры
             filtered = data
             for col, value in filters.items():
                 if value is None:
                     continue
                 if isinstance(value, list):
+                    # Если список — проверяем вхождение
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
+                    # Строковое сравнение
                     filtered = [row for row in filtered if row.get(col) == value]
-            # Проверка сериализуемости
-            try:
-                json.dumps(filtered, ensure_ascii=False, default=str)
-            except Exception as e:
-                return ToolResponse(status="error", error_message=f"Data serialization error: {e}")
+            
+            # Очищаем данные
+            filtered = sanitize_data(filtered)
             return ToolResponse(status="success", result={
                 "filtered_data": filtered,
                 "count": len(filtered)

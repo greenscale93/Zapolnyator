@@ -166,5 +166,50 @@ async def save_document(doc: types.Document, prefix: str) -> str:
         await f.write(downloaded_file.read())
     return file_path
 
+@router.message(Command("approve"))
+async def cmd_approve(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для подтверждения.")
+        return
+    # Отправляем сигнал в Orchestrator
+    client = OrchestratorClient()
+    try:
+        await client.approve_llm(task_id)
+        await message.answer("✅ Запрос одобрен. Продолжаю обработку...")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для отмены.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.cancel_llm(task_id)
+        await message.answer("✅ Запрос отменён.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("stop"))
+async def cmd_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для остановки.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.stop_task(task_id)
+        await message.answer("⏹️ Задача остановлена.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
 def register_handlers(dp):
     dp.include_router(router)

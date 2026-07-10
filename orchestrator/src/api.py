@@ -71,3 +71,18 @@ async def answer_question(task_id: str, request: TaskAnswerRequest):
         raise HTTPException(status_code=400, detail="Not waiting for question")
     await agent.process_answer(task_id, request.answer)
     return {"status": "ok"}
+
+@router.post("/task/{task_id}/approve")
+async def approve_llm(task_id: str):
+    await agent.approve_llm_request(task_id)
+    return {"status": "ok"}
+
+@router.post("/task/{task_id}/cancel")
+async def cancel_llm(task_id: str):
+    await agent.cancel_llm_request(task_id)
+    return {"status": "ok"}
+
+@router.post("/task/{task_id}/stop")
+async def stop_task(task_id: str):
+    await agent.stop_task(task_id)
+    return {"status": "ok"}
