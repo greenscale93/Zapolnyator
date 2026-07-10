@@ -10,9 +10,6 @@ from aiofiles import open as aio_open
 router = Router()
 logger = logging.getLogger(__name__)
 
-class FileStates(StatesGroup):
-    waiting_excel = State()
-    waiting_mxl = State()
 
 @router.message(Command("start", "help"))
 async def cmd_start(message: Message, state: FSMContext):
@@ -23,44 +20,66 @@ async def cmd_start(message: Message, state: FSMContext):
         "2. MXL-выгрузку из 1С\n\n"
         "Вы можете отправить их одновременно (одним сообщением) или по очереди."
     )
-    await state.set_state(FileStates.waiting_excel)
 
-@router.message(StateFilter(FileStates.waiting_excel), F.document)
-@router.message(StateFilter(FileStates.waiting_mxl), F.document)
+@router.message(Command("reset", "start"))
+async def cmd_reset(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Состояние сброшено. Можете загружать файлы заново.")
+
+@router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
-    current_state = await state.get_state()
     doc = message.document
     file_name = doc.file_name or "unknown"
     ext = os.path.splitext(file_name)[1].lower()
 
-    if current_state == FileStates.waiting_excel:
-        if ext not in ['.xlsx', '.xls']:
-            await message.answer("Пожалуйста, отправьте Excel-файл (.xlsx или .xls).")
+    # Получаем текущие сохранённые данные
+    data = await state.get_data()
+    excel_path = data.get("excel_path")
+    mxl_path = data.get("mxl_path")
+
+    # Если оба уже есть – не даём загрузить ещё
+    if excel_path and mxl_path:
+        await message.answer("Вы уже загрузили оба файла. Начинаю обработку...")
+        # Здесь в будущем будет вызов Orchestrator
+        await state.clear()
+        return
+
+    # Обработка Excel-файла
+    if ext in ['.xlsx', '.xls']:
+        if excel_path:
+            await message.answer("Excel-файл уже был загружен. Если хотите заменить, отправьте новый.")
             return
         file_path = await save_document(doc, "excel")
         await state.update_data(excel_path=file_path)
-        await message.answer(f"Excel-файл «{file_name}» сохранён.")
-        await state.set_state(FileStates.waiting_mxl)
-        await message.answer("Теперь отправьте MXL-файл (выгрузка из 1С).")
-    elif current_state == FileStates.waiting_mxl:
-        if ext != '.mxl':
-            await message.answer("Пожалуйста, отправьте MXL-файл (расширение .mxl).")
+        await message.answer(f"✅ Excel-файл «{file_name}» сохранён.")
+
+    # Обработка MXL-файла
+    elif ext == '.mxl':
+        if mxl_path:
+            await message.answer("MXL-файл уже был загружен. Если хотите заменить, отправьте новый.")
             return
         file_path = await save_document(doc, "mxl")
         await state.update_data(mxl_path=file_path)
-        await message.answer(f"MXL-файл «{file_name}» сохранён.")
-        data = await state.get_data()
-        excel_path = data.get("excel_path")
-        mxl_path = data.get("mxl_path")
-        if excel_path and mxl_path:
-            await message.answer("✅ Оба файла успешно загружены на сервер!")
-            await message.answer(f"Excel: {excel_path}\nMXL: {mxl_path}")
-            # Здесь в будущем будет вызов Orchestrator
-            await state.clear()
-            await message.answer("Файлы готовы к дальнейшей обработке.")
-        else:
-            await state.set_state(FileStates.waiting_excel)
-            await message.answer("Что-то пошло не так, начнём заново. Отправьте Excel-файл.")
+        await message.answer(f"✅ MXL-файл «{file_name}» сохранён.")
+
+    else:
+        await message.answer("Неизвестный формат. Пожалуйста, отправьте Excel (.xlsx/.xls) или MXL (.mxl) файл.")
+        return
+
+    # Проверяем, загружены ли оба файла
+    data = await state.get_data()
+    if data.get("excel_path") and data.get("mxl_path"):
+        await message.answer("✅ Оба файла успешно загружены на сервер!")
+        await message.answer(f"Excel: {data['excel_path']}\nMXL: {data['mxl_path']}")
+        # Здесь будет вызов Orchestrator
+        await state.clear()
+        await message.answer("Файлы готовы к дальнейшей обработке.")
+    else:
+        # Если чего-то не хватает – напоминаем
+        if not data.get("excel_path"):
+            await message.answer("Ожидаю Excel-файл (.xlsx/.xls).")
+        if not data.get("mxl_path"):
+            await message.answer("Ожидаю MXL-файл (.mxl).")
 
 async def save_document(doc: types.Document, prefix: str) -> str:
     temp_dir = os.getenv("TEMP_DIR", "/app/temp")
