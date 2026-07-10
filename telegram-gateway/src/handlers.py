@@ -94,6 +94,7 @@ async def handle_document(message: Message, state: FSMContext):
 async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
     client = OrchestratorClient()
     try:
+        # Извлекаем месяц и год из имени шаблона (упрощённо)
         month = "Май"
         year = 2026
         task_id = await client.create_task(

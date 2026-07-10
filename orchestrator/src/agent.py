@@ -79,9 +79,11 @@ class OrchestratorAgent:
         output_path = None
         for sheet_name, mapping in sheets_mapping.items():
             await self._send_telegram_message(user_id, f"📝 Заполняю лист: {sheet_name}...")
+            # Если output_path уже есть, используем его как шаблон
+            template_to_use = output_path if output_path else excel_path
             result = await self.worker_client.call_tool("apply_sheet_mapping", {
                 "source_path": data_file_path,
-                "template_path": excel_path if not output_path else output_path,
+                "template_path": template_to_use,
                 "sheet_name": sheet_name,
                 "mapping": mapping,
                 "month": month,

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
-from src.excel_processor import write_excel_data, read_excel_structure
+from src.excel_processor import apply_sheet_mapping, read_excel_structure
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,7 +24,6 @@ class ToolResponse(BaseModel):
     error_message: Optional[str] = None
 
 def sanitize_data(data):
-    """Рекурсивно удаляет управляющие символы из строк."""
     if isinstance(data, str):
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', data)
     elif isinstance(data, dict):
@@ -54,16 +53,10 @@ async def call_tool(request: ToolRequest):
             file_path = request.arguments["file_path"]
             sheet_name = request.arguments.get("sheet_name")
             try:
-                # Если sheet_name не указан, читаем первый лист (индекс 0)
-                if sheet_name is None:
-                    df = pd.read_excel(file_path, sheet_name=0, header=0)
-                else:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
-                # Заменяем NaN на None
+                df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
                 df = df.where(pd.notnull(df), None)
                 data = df.to_dict(orient='records')
                 columns = df.columns.tolist()
-                # Очищаем данные
                 data = sanitize_data(data)
                 return ToolResponse(status="success", result={
                     "data": data,
@@ -77,7 +70,6 @@ async def call_tool(request: ToolRequest):
         elif request.tool == "filter_mxl_data":
             file_path = request.arguments["file_path"]
             filters = request.arguments.get("filters", {})
-            # Если файл CSV, читаем его
             if file_path.endswith('.csv'):
                 import csv
                 data = []
@@ -89,8 +81,6 @@ async def call_tool(request: ToolRequest):
                 if parsed.get("status") == "error":
                     return ToolResponse(status="error", error_message=parsed.get("error_message"))
                 data = parsed["result"]["data"]
-            
-            # Применяем фильтры
             filtered = data
             for col, value in filters.items():
                 if value is None:
@@ -99,19 +89,21 @@ async def call_tool(request: ToolRequest):
                     filtered = [row for row in filtered if row.get(col) in value]
                 else:
                     filtered = [row for row in filtered if row.get(col) == value]
-            
             filtered = sanitize_data(filtered)
             return ToolResponse(status="success", result={
                 "filtered_data": filtered,
                 "count": len(filtered)
             })
         
-        elif request.tool == "write_excel":
+        elif request.tool == "apply_sheet_mapping":
+            source_path = request.arguments["source_path"]
             template_path = request.arguments["template_path"]
-            sheets_data = request.arguments["sheets_data"]
+            sheet_name = request.arguments["sheet_name"]
+            mapping = request.arguments["mapping"]
+            month = request.arguments["month"]
+            year = request.arguments["year"]
             password = request.arguments.get("password", "987456")
-            output_path = request.arguments.get("output_path")
-            result = await write_excel_data(template_path, sheets_data, password, output_path)
+            result = await apply_sheet_mapping(source_path, template_path, sheet_name, mapping, month, year, password)
             if result.get("status") == "error":
                 return ToolResponse(status="error", error_message=result.get("error_message"))
             return ToolResponse(status="success", result={"output_path": result["output_path"]})
