@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
-from src.excel_processor import apply_sheet_mapping, read_excel_structure
+from src.excel_processor import read_excel_structure, apply_sheet_mapping
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,34 +66,6 @@ async def call_tool(request: ToolRequest):
             except Exception as e:
                 logger.exception("read_excel_data error")
                 return ToolResponse(status="error", error_message=str(e))
-        
-        elif request.tool == "filter_mxl_data":
-            file_path = request.arguments["file_path"]
-            filters = request.arguments.get("filters", {})
-            if file_path.endswith('.csv'):
-                import csv
-                data = []
-                with open(file_path, 'r', encoding='utf-8-sig') as f:
-                    reader = csv.DictReader(f)
-                    data = list(reader)
-            else:
-                parsed = await parse_mxl(file_path)
-                if parsed.get("status") == "error":
-                    return ToolResponse(status="error", error_message=parsed.get("error_message"))
-                data = parsed["result"]["data"]
-            filtered = data
-            for col, value in filters.items():
-                if value is None:
-                    continue
-                if isinstance(value, list):
-                    filtered = [row for row in filtered if row.get(col) in value]
-                else:
-                    filtered = [row for row in filtered if row.get(col) == value]
-            filtered = sanitize_data(filtered)
-            return ToolResponse(status="success", result={
-                "filtered_data": filtered,
-                "count": len(filtered)
-            })
         
         elif request.tool == "apply_sheet_mapping":
             source_path = request.arguments["source_path"]
