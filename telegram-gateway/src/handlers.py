@@ -30,30 +30,70 @@ async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
 
+@router.message(Command("approve"))
+async def cmd_approve(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для подтверждения.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.approve_llm(task_id)
+        await message.answer("✅ Запрос одобрен. Продолжаю обработку...")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для отмены.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.cancel_llm(task_id)
+        await message.answer("✅ Запрос отменён.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@router.message(Command("stop"))
+async def cmd_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    task_id = data.get("task_id")
+    if not task_id:
+        await message.answer("❌ Нет активной задачи для остановки.")
+        return
+    client = OrchestratorClient()
+    try:
+        await client.stop_task(task_id)
+        await message.answer("⏹️ Задача остановлена.")
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
     doc = message.document
     file_name = doc.file_name or "unknown"
     ext = os.path.splitext(file_name)[1].lower()
 
-    # Проверяем расширение: разрешены Excel и MXL (для обратной совместимости)
     if ext not in ['.xlsx', '.xls', '.mxl']:
         await message.answer("❌ Неподдерживаемый формат. Отправьте Excel (.xlsx/.xls) или MXL (.mxl).")
         return
 
     data = await state.get_data()
-    excel_path = data.get("excel_path")  # шаблон отчёта
-    data_path = data.get("data_path")    # файл с данными
+    excel_path = data.get("excel_path")
+    data_path = data.get("data_path")
 
-    # Если оба файла уже загружены – не даём загрузить ещё
     if excel_path and data_path:
         await message.answer("Вы уже загрузили оба файла. Начинаю обработку...")
         await start_processing(message, state, excel_path, data_path)
         return
 
-    # Определяем тип файла по имени (содержит "ВыгрузкаДляExcel") или по расширению
     if "ВыгрузкаДляExcel" in file_name or "выгрузкадляexcel" in file_name.lower():
-        # Это файл с данными
         if data_path:
             await message.answer("Файл с данными уже загружен. Если хотите заменить, отправьте новый.")
             return
@@ -63,7 +103,6 @@ async def handle_document(message: Message, state: FSMContext):
         if not excel_path:
             await message.answer("Ожидаю шаблон Excel (например, 'ДКП 10 - май 2026.xlsx').")
     else:
-        # Это шаблон отчёта
         if excel_path:
             await message.answer("Шаблон отчёта уже загружен. Если хотите заменить, отправьте новый.")
             return
@@ -76,18 +115,15 @@ async def handle_document(message: Message, state: FSMContext):
         if not data_path:
             await message.answer("Ожидаю файл с данными (содержит 'ВыгрузкаДляExcel').")
 
-    # Проверяем, загружены ли оба файла
     data = await state.get_data()
     if data.get("excel_path") and data.get("data_path"):
         await message.answer("✅ Оба файла успешно загружены на сервер!")
         await start_processing(message, state, data["excel_path"], data["data_path"])
 
 async def start_processing(message: Message, state: FSMContext, excel_path: str, data_path: str):
-    """Запускает обработку через Orchestrator."""
     client = OrchestratorClient()
     try:
-        # Извлекаем месяц и год из имени шаблона (например, "ДКП 10 - Май 2026.xlsx")
-        # Пока оставим захардкоженными, позже можно сделать умный парсинг
+        # Извлекаем месяц и год из имени шаблона (можно улучшить позже)
         month = "Май"
         year = 2026
         task_id = await client.create_task(
@@ -107,7 +143,6 @@ async def start_processing(message: Message, state: FSMContext, excel_path: str,
     asyncio.create_task(poll_task_status(message, state, task_id))
 
 async def poll_task_status(message: Message, state: FSMContext, task_id: str):
-    """Периодически опрашивает статус задачи."""
     client = OrchestratorClient()
     while True:
         try:
@@ -150,7 +185,6 @@ async def poll_task_status(message: Message, state: FSMContext, task_id: str):
 
 @router.message(StateFilter(WaitingState.answer), F.text)
 async def handle_answer(message: Message, state: FSMContext):
-    """Обрабатывает ответ пользователя на вопрос."""
     data = await state.get_data()
     task_id = data.get("task_id")
     if not task_id:
@@ -174,7 +208,6 @@ async def save_document(doc: types.Document, prefix: str) -> str:
     temp_dir = os.getenv("TEMP_DIR", "/app/temp")
     os.makedirs(temp_dir, exist_ok=True)
     file_id = doc.file_id
-    # Сохраняем оригинальное имя файла
     file_name = f"{prefix}_{file_id}.{doc.file_name.split('.')[-1]}"
     file_path = os.path.join(temp_dir, file_name)
     file_info = await doc.bot.get_file(file_id)

@@ -111,7 +111,6 @@ class OrchestratorAgent:
             columns = read_result["result"]["columns"]
             total_rows = read_result["result"]["rows"]
             data_source = "Excel"
-            # Для filter_mxl_data нужен путь к файлу
             data_path_for_tool = data_file_path
         else:
             # MXL — конвертируем в CSV
@@ -126,7 +125,6 @@ class OrchestratorAgent:
             total_rows = convert_result["result"]["rows"]
             data_source = "MXL (преобразован в CSV)"
             data_path_for_tool = csv_path
-            # Отправляем CSV-файл пользователю
             await self._send_telegram_message(
                 user_id,
                 f"📄 CSV-файл создан ({total_rows} строк). Отправляю файл.",
@@ -200,7 +198,9 @@ Excel-шаблон: {excel_path}
         logger.info(f"Task {task_id} waiting for approval")
 
     async def approve_llm_request(self, task_id: str):
+        logger.info(f"Approving LLM request for task {task_id}")
         if task_id not in self.pending_approval:
+            logger.warning(f"Task {task_id} not found in pending_approval")
             return
         pending = self.pending_approval.pop(task_id)
         user_id = pending["user_id"]
@@ -209,6 +209,7 @@ Excel-шаблон: {excel_path}
         await self._run_llm_cycle(task_id, history, user_id)
 
     async def cancel_llm_request(self, task_id: str):
+        logger.info(f"Cancelling LLM request for task {task_id}")
         if task_id in self.pending_approval:
             pending = self.pending_approval.pop(task_id)
             user_id = pending["user_id"]
@@ -219,6 +220,7 @@ Excel-шаблон: {excel_path}
             })
 
     async def _run_llm_cycle(self, task_id: str, history: list, user_id: int):
+        logger.info(f"Starting LLM cycle for task {task_id}")
         max_iterations = 15
         iteration = 0
         total_tokens = 0
@@ -248,7 +250,6 @@ Excel-шаблон: {excel_path}
                         }
                     }
                 ]
-                # Проверка размера истории
                 history_str = json.dumps(history, ensure_ascii=False, default=str)
                 if len(history_str) > 4000000:
                     debug_file = await self._save_debug_data(history, "history_overflow")
@@ -376,13 +377,13 @@ Excel-шаблон: {excel_path}
             pass
 
     async def stop_task(self, task_id: str):
+        logger.info(f"Stopping task {task_id}")
         if task_id in self.pending_approval:
             await self.cancel_llm_request(task_id)
         await self.session_manager.update_session(task_id, {
             "status": "cancelled",
             "error": "Остановлено пользователем"
         })
-        logger.info(f"Task {task_id} stopped by user")
 
     async def _set_error(self, task_id: str, error_message: str):
         logger.error(f"Task {task_id} error: {error_message}")

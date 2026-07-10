@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import uuid
 import logging
 import asyncio
-from typing import Dict, Optional
+from typing import Dict
 
 from src.agent import OrchestratorAgent
 from src.session_manager import SessionManager
@@ -30,7 +30,6 @@ class TaskAnswerRequest(BaseModel):
 
 @router.post("/task")
 async def create_task(request: TaskCreateRequest):
-    # Проверяем наличие необходимых ключей
     if "excel" not in request.files or "data" not in request.files:
         raise HTTPException(status_code=400, detail="Missing file keys: 'excel' and 'data' are required")
     
@@ -38,16 +37,14 @@ async def create_task(request: TaskCreateRequest):
     logger.info(f"Создана задача {task_id} для пользователя {request.user_id}")
     logger.info(f"Шаблон: {request.files['excel']}, Данные: {request.files['data']}")
     
-    # Сохраняем начальное состояние
     await session_manager.init_session(
         task_id,
         request.user_id,
-        request.files,  # передаём весь словарь
+        request.files,
         request.month,
         request.year
     )
     
-    # Запускаем обработку в фоне
     asyncio.create_task(agent.run_agent_cycle(task_id))
     
     return {"task_id": task_id, "status": "accepted"}
@@ -86,15 +83,18 @@ async def answer_question(task_id: str, request: TaskAnswerRequest):
 
 @router.post("/task/{task_id}/approve")
 async def approve_llm(task_id: str):
+    logger.info(f"Received approve for task {task_id}")
     await agent.approve_llm_request(task_id)
     return {"status": "ok"}
 
 @router.post("/task/{task_id}/cancel")
 async def cancel_llm(task_id: str):
+    logger.info(f"Received cancel for task {task_id}")
     await agent.cancel_llm_request(task_id)
     return {"status": "ok"}
 
 @router.post("/task/{task_id}/stop")
 async def stop_task(task_id: str):
+    logger.info(f"Received stop for task {task_id}")
     await agent.stop_task(task_id)
     return {"status": "ok"}
