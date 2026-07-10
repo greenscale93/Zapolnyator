@@ -53,6 +53,25 @@ class MemoryStore:
         # Заглушка
         return None
 
-    async def load_all_rules(self) -> dict:
-        # Заглушка
+    async def load_all_rules(self) -> Dict[str, Any]:
+        """Загружает все правила из памяти."""
+        # Здесь можно загрузить из таблиц subdivision_rules, employee_exceptions, vat_exceptions
+        # Пока возвращаем пустой словарь
         return {}
+    
+    async def save_column_mapping(self, mapping: Dict[str, str]) -> None:
+        """Сохраняет маппинг колонок в отдельную таблицу."""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS column_mappings (
+                id INTEGER PRIMARY KEY,
+                key TEXT,
+                value TEXT,
+                UNIQUE(key)
+            )
+        ''')
+        for key, value in mapping.items():
+            c.execute('REPLACE INTO column_mappings (key, value) VALUES (?, ?)', (key, value))
+        conn.commit()
+        conn.close()

@@ -3,59 +3,74 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-async def process_data(mxl_data: List[Dict[str, str]], month: str, year: int, rules: Dict[str, Any]) -> dict:
+async def process_data(mxl_data: List[Dict[str, str]], month: str, year: int, rules: Dict[str, Any], user_mapping: Optional[Dict[str, str]] = None) -> dict:
     """
     Применяет бизнес-логику к данным из MXL.
+    Если user_mapping задан, использует его для определения колонок.
     Возвращает данные для каждого листа и, возможно, запрос на уточнение.
     """
     try:
-        # 1. Определяем структуру колонок (поиск по ключевым словам)
-        columns = list(mxl_data[0].keys()) if mxl_data else []
+        if not mxl_data:
+            return {"status": "error", "error_message": "No data provided"}
+        
+        columns = list(mxl_data[0].keys())
         logger.info(f"Columns detected: {columns}")
         
-        # 2. Ищем колонки по ключевым словам (регистронезависимо)
-        def find_column(keywords: List[str]) -> Optional[str]:
-            for col in columns:
-                col_lower = col.lower()
-                for kw in keywords:
-                    if kw in col_lower:
-                        return col
-            return None
+        # Если пользователь уже дал маппинг – используем его
+        if user_mapping:
+            col_subdivision = user_mapping.get("subdivision")
+            col_amount = user_mapping.get("amount")
+            col_contractor = user_mapping.get("contractor")
+            col_vat = user_mapping.get("vat")
+            col_employee = user_mapping.get("employee")
+            col_type = user_mapping.get("type")
+            logger.info(f"Using user mapping: {user_mapping}")
+        else:
+            # Автоопределение
+            def find_column(keywords: List[str]) -> Optional[str]:
+                for col in columns:
+                    col_lower = col.lower()
+                    for kw in keywords:
+                        if kw in col_lower:
+                            return col
+                return None
+            
+            col_subdivision = find_column(["подразделение", "отдел", "департамент", "подразд"])
+            col_contractor = find_column(["контрагент", "клиент", "заказчик"])
+            col_amount = find_column(["сумма", "стоимость", "выручка"])
+            col_vat = find_column(["ндс", "ставка ндс"])
+            col_employee = find_column(["сотрудник", "фио", "работник"])
+            col_type = find_column(["тип", "вид"])
         
-        # Основные колонки (пример, можно расширить)
-        col_subdivision = find_column(["подразделение", "отдел", "департамент", "подразд"])
-        col_contractor = find_column(["контрагент", "клиент", "заказчик"])
-        col_amount = find_column(["сумма", "стоимость", "выручка"])
-        col_vat = find_column(["ндс", "ставка ндс"])
-        col_employee = find_column(["сотрудник", "фио", "работник"])
-        col_type = find_column(["тип", "вид"])
-        
+        # Если не нашли ключевые колонки – запрашиваем уточнение
         if not col_subdivision or not col_amount:
             return {
                 "status": "needs_clarification",
                 "clarification": {
-                    "question": "Не удалось определить структуру MXL-файла. Укажите, какие колонки соответствуют подразделению и сумме.",
-                    "context": {"columns": columns}
+                    "question": "Не удалось определить структуру MXL-файла. Укажите, какая колонка соответствует подразделению (например, 'Отдел') и какая – сумме (например, 'Сумма'). Ответьте в формате: подразделение: название_колонки, сумма: название_колонки",
+                    "context": {
+                        "type": "column_mapping",
+                        "columns": columns,
+                        "missing": {
+                            "subdivision": not col_subdivision,
+                            "amount": not col_amount
+                        }
+                    }
                 }
             }
         
-        # 3. Группируем данные по листам (условно, по типу операции)
-        # Здесь мы используем упрощённую логику: все строки идут в Реализацию, ДС, ФОТ, Взаиморасчеты
-        # На практике нужно анализировать типы операций, но для примера разобьём по наличию колонок
-        
+        # Группировка данных по листам (упрощённая логика)
         realization_rows = []
         payment_rows = []
         payroll_rows = []
         settlements_rows = []
-        
         fact_ffot_value = 0.0
         
         for row in mxl_data:
-            # Пример: если есть колонка "тип", можно классифицировать
+            # Определяем тип операции, если есть колонка
             row_type = row.get(col_type, "").lower() if col_type else ""
             amount = float(row.get(col_amount, 0) or 0)
             
-            # Логика классификации (заглушка, нужно доработать под реальные данные)
             if "реализация" in row_type:
                 realization_rows.append(row)
             elif "дс" in row_type or "денежные средства" in row_type:
@@ -66,21 +81,28 @@ async def process_data(mxl_data: List[Dict[str, str]], month: str, year: int, ru
             elif "взаиморасчет" in row_type:
                 settlements_rows.append(row)
             else:
-                # Если тип не определён, направляем в реализацию
+                # По умолчанию в реализацию
                 realization_rows.append(row)
         
-        # 4. Применяем правила из долгосрочной памяти (rules)
-        # rules содержит загруженные правила из SQLite
-        # Здесь можно добавить обработку: маппинг подразделений, исключения и т.д.
+        # Применяем правила из долгосрочной памяти (rules) – пока заглушка
+        # Здесь можно добавить маппинг подразделений и исключения
         
         return {
             "status": "success",
             "result": {
                 "realization_rows": realization_rows,
                 "payment_rows": payment_rows,
-                "payroll_rows": payroll_rows,
                 "settlements_rows": settlements_rows,
-                "fact_ffot_value": fact_ffot_value
+                "payroll_rows": payroll_rows,
+                "fact_ffot_value": fact_ffot_value,
+                "detected_mapping": {
+                    "subdivision": col_subdivision,
+                    "amount": col_amount,
+                    "contractor": col_contractor,
+                    "vat": col_vat,
+                    "employee": col_employee,
+                    "type": col_type
+                }
             }
         }
     except Exception as e:
