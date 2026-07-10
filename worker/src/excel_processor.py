@@ -63,19 +63,17 @@ def clean_number(value):
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456", output_path: str = None) -> dict:
     """
     Применяет маппинг к указанному листу.
-    Если output_path передан, работаем с существующим файлом, иначе создаём новый.
+    Поддерживает группировку (group_by) и агрегацию (aggregations).
     """
     try:
         # 1. Определяем файл для работы
         if output_path is None:
-            # Создаём новый файл из шаблона
             output_dir = os.path.dirname(template_path)
             output_filename = f"ДКП_10_-_{month}_{year}.xlsx"
             output_path = os.path.join(output_dir, output_filename)
             shutil.copy2(template_path, output_path)
             logger.info(f"Created new output file: {output_path}")
             
-            # Расшифровка, если есть пароль
             if password:
                 try:
                     with open(output_path, 'rb') as f:
@@ -90,7 +88,6 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 except Exception as e:
                     logger.warning(f"Decrypt failed: {e}")
         else:
-            # Используем существующий файл
             if not os.path.exists(output_path):
                 return {"status": "error", "error_message": f"Output file not found: {output_path}"}
             logger.info(f"Using existing output file: {output_path}")
@@ -99,7 +96,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
-        # 3. Применяем фильтры
+        # 3. Применяем общие фильтры
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
@@ -121,31 +118,70 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
 
-        # 4. Открываем рабочую книгу
+        # 4. Применяем view_filters (если есть) — это дополнительный фильтр по колонке с несколькими допустимыми значениями
+        view_filters = mapping.get("view_filters", {})
+        if view_filters:
+            for col, allowed_values in view_filters.items():
+                if col in df_source.columns:
+                    df_source = df_source[df_source[col].astype(str).isin([str(v) for v in allowed_values])]
+                    logger.info(f"Applied view filter {col} in {allowed_values}, rows left: {len(df_source)}")
+                else:
+                    logger.warning(f"View filter column '{col}' not found in source")
+
+        if df_source.empty:
+            return {"status": "error", "error_message": "No data after applying view filters"}
+
+        # 5. Группировка и агрегация (если заданы)
+        group_by = mapping.get("group_by")
+        aggregations = mapping.get("aggregations", {})
+
+        if group_by and group_by in df_source.columns:
+            # Определяем агрегационные функции
+            agg_funcs = {}
+            for agg_col, agg_type in aggregations.items():
+                if agg_col in df_source.columns:
+                    if agg_type == "sum":
+                        agg_funcs[agg_col] = "sum"
+                    elif agg_type == "concat":
+                        agg_funcs[agg_col] = lambda x: "; ".join(x.dropna().astype(str).unique())
+                    else:
+                        agg_funcs[agg_col] = agg_type
+            if agg_funcs:
+                df_grouped = df_source.groupby(group_by).agg(agg_funcs).reset_index()
+                logger.info(f"Grouped by {group_by}, rows after grouping: {len(df_grouped)}")
+                # Переименовываем колонки обратно (если нужно)
+                # df_grouped уже имеет колонки: group_by и agg_cols
+                # Преобразуем в список словарей
+                data_for_insert = df_grouped.to_dict(orient='records')
+            else:
+                data_for_insert = df_source.to_dict(orient='records')
+        else:
+            data_for_insert = df_source.to_dict(orient='records')
+
+        # 6. Открываем рабочую книгу
         wb = load_workbook(output_path)
         if sheet_name not in wb.sheetnames:
             return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
         ws = wb[sheet_name]
 
-        # 5. Определяем строку с заголовками
         header_row = mapping.get("header_row", 2)
         logger.info(f"Header row: {header_row}")
 
-        # 6. Подготавливаем данные для вставки
+        # 7. Подготавливаем данные для вставки с учётом маппинга колонок
         source_cols = mapping.get("source_columns", {})
         source_cols = {int(k): v for k, v in source_cols.items()}
         append = mapping.get("append_to_end", True)
 
         rows_to_insert = []
-        for idx, row in df_source.iterrows():
+        for row_dict in data_for_insert:
             new_row = {}
             for target_col_idx, source_expr in source_cols.items():
                 if source_expr == "{month} {year}":
                     new_row[target_col_idx] = f"{month} {year}"
                 else:
-                    if source_expr in df_source.columns:
-                        val = row[source_expr]
-                        if any(keyword in source_expr for keyword in ['Сумма', 'Ставка', 'Оклад', 'Премия', 'НДС']):
+                    if source_expr in row_dict:
+                        val = row_dict[source_expr]
+                        if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']):
                             val = clean_number(val)
                         new_row[target_col_idx] = val
                     else:
@@ -157,7 +193,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # 7. Вставляем строки ПОСЛЕ последней существующей строки
+        # 8. Вставляем строки ПОСЛЕ последней существующей строки
         if append:
             last_row = ws.max_row
             while last_row > 0:
@@ -179,13 +215,11 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         logger.info(f"Start row: {start_row}, number of rows to insert: {len(rows_to_insert)}")
 
-        # Записываем данные
         for i, row_dict in enumerate(rows_to_insert, start=start_row):
             for col_idx, value in row_dict.items():
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
 
-        # 8. Сохраняем книгу
         wb.save(output_path)
         logger.info(f"File saved: {output_path}")
 
