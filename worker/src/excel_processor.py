@@ -51,9 +51,6 @@ async def read_excel_structure(file_path: str) -> dict:
         return {"status": "error", "error_message": str(e)}
 
 async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456") -> dict:
-    """
-    Применяет маппинг к указанному листу.
-    """
     try:
         # 1. Копируем шаблон
         output_dir = os.path.dirname(template_path)
@@ -109,27 +106,9 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
             return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
         ws = wb[sheet_name]
 
-        # Удаляем все таблицы на листе, чтобы избежать повреждения
-        if hasattr(ws, 'tables'):
-            table_names = list(ws.tables.keys())
-            for table_name in table_names:
-                del ws.tables[table_name]
-                logger.info(f"Removed table: {table_name}")
-
-        # 6. Определяем номер строки с заголовками в шаблоне
+        # 6. Определяем строку с заголовками (используем существующую вторую строку)
         header_row = mapping.get("header_row", 2)
-        # Проверяем, есть ли данные в этой строке
-        if ws.cell(row=header_row, column=1).value is None:
-            # Если нет, пробуем строку 1
-            if ws.cell(row=1, column=1).value is not None:
-                header_row = 1
-            else:
-                # Если и в первой строке пусто, создаём заголовки из колонок
-                header_row = 1
-                for col_idx, header in enumerate(df_source.columns, start=1):
-                    ws.cell(row=header_row, column=col_idx).value = header
-                logger.info(f"Created headers in row {header_row}")
-
+        # Проверяем, есть ли данные в этой строке, если нет – оставляем как есть
         logger.info(f"Header row: {header_row}")
 
         # 7. Подготавливаем данные для вставки
@@ -156,18 +135,23 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # 8. Вставляем строки
+        # 8. Вставляем строки ПОСЛЕ последней существующей строки (не после заголовков!)
         if append:
-            # Находим последнюю заполненную строку после заголовков
-            max_row = ws.max_row
-            start_row = max_row + 1
-            # Пропускаем пустые строки в конце
-            while start_row > header_row and ws.cell(row=start_row-1, column=1).value is None:
-                start_row -= 1
-            if start_row <= header_row:
-                start_row = header_row + 1
+            # Находим последнюю строку с любыми данными (не только в колонке A)
+            last_row = ws.max_row
+            # Ищем последнюю непустую строку
+            while last_row > 0:
+                row_has_data = False
+                for col in range(1, ws.max_column + 1):
+                    if ws.cell(row=last_row, column=col).value is not None:
+                        row_has_data = True
+                        break
+                if row_has_data:
+                    break
+                last_row -= 1
+            start_row = last_row + 1
         else:
-            # Если append=false, очищаем всё после заголовков
+            # Если не append, очищаем всё после заголовков
             if ws.max_row > header_row:
                 ws.delete_rows(header_row + 1, ws.max_row - header_row)
             start_row = header_row + 1
@@ -179,9 +163,8 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
             for col_idx, value in row_dict.items():
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
-                    logger.debug(f"Set cell ({i}, {col_idx}) = {value}")
 
-        # Сохраняем
+        # 9. Сохраняем книгу (НЕ трогаем таблицы и автофильтр)
         wb.save(output_path)
         logger.info(f"File saved: {output_path}")
 
