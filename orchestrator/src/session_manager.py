@@ -17,7 +17,7 @@ class SessionManager:
             "month": month,
             "year": year,
             "status": "processing",
-            "history": []  # для диалога с DeepSeek
+            "history": []
         }
         await self.client.setex(f"session:{task_id}", 3600, json.dumps(data))
 
@@ -35,3 +35,16 @@ class SessionManager:
 
     async def delete_session(self, task_id: str):
         await self.client.delete(f"session:{task_id}")
+
+    # === НОВЫЕ МЕТОДЫ ДЛЯ АВТОТЕСТА ===
+    async def get_auto_test_status(self, user_id: int) -> bool:
+        key = f"autotest:{user_id}"
+        val = await self.client.get(key)
+        if val is None:
+            # по умолчанию берём из переменной окружения
+            return os.getenv("AUTO_TEST", "false").lower() == "true"
+        return val == "true"
+
+    async def set_auto_test_status(self, user_id: int, enabled: bool):
+        key = f"autotest:{user_id}"
+        await self.client.set(key, "true" if enabled else "false")

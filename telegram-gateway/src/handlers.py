@@ -3,7 +3,6 @@ import logging
 import asyncio
 import json
 import re
-from datetime import datetime
 from aiogram import Router, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -16,7 +15,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 # === НАСТРОЙКИ ===
-AUTO_TEST = os.getenv("AUTO_TEST", "false").lower() == "true"
 TEMP_DIR = os.getenv("TEMP_DIR", "/app/temp")
 LAST_FILES_PATH = os.path.join(TEMP_DIR, "last_files.json")
 
@@ -43,10 +41,6 @@ def _get_last_files():
     return None, None
 
 def extract_month_year_from_filename(filename: str) -> tuple:
-    """
-    Извлекает год и месяц из имени файла вида "ВыгрузкаДляExcel_2026-06"
-    Возвращает (month_name, year_int)
-    """
     pattern = r'ВыгрузкаДляExcel[_\-]?(\d{4})[-_](\d{2})'
     match = re.search(pattern, filename)
     if match:
@@ -59,16 +53,19 @@ def extract_month_year_from_filename(filename: str) -> tuple:
         }
         month_name = months_ru.get(month_num, "Май")
         return month_name, year
-    return "Май", 2026  # fallback
+    return "Май", 2026
 
 @router.message(Command("start", "help"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    client = OrchestratorClient()
+    user_id = message.from_user.id
+    auto_test = await client.get_autotest_status(user_id)
     
-    if AUTO_TEST:
+    if auto_test:
         excel_path, data_path = _get_last_files()
         if excel_path and data_path and os.path.exists(excel_path) and os.path.exists(data_path):
-            await message.answer("🔄 Автотест: использую последние файлы...")
+            await message.answer("🔄 Автотест включён: использую последние файлы...")
             await state.update_data(excel_path=excel_path, data_path=data_path)
             await start_processing(message, state, excel_path, data_path)
             return
@@ -79,13 +76,30 @@ async def cmd_start(message: Message, state: FSMContext):
         "Привет! Отправьте мне два файла:\n"
         "1. Шаблон отчёта (Excel) – например, 'ДКП 10 - май 2026.xlsx'\n"
         "2. Выгрузка данных (Excel) – имя должно содержать 'ВыгрузкаДляExcel'\n\n"
-        "Вы можете отправлять их в любом порядке."
+        "Вы можете отправлять их в любом порядке.\n\n"
+        "Доступные команды:\n"
+        "/start - начать работу\n"
+        "/reset - сбросить состояние\n"
+        "/autotest - включить/выключить автотест\n"
+        "/stop - остановить текущую задачу"
     )
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Состояние сброшено. Можете загружать файлы заново.")
+
+@router.message(Command("autotest"))
+async def cmd_autotest(message: Message, state: FSMContext):
+    client = OrchestratorClient()
+    user_id = message.from_user.id
+    try:
+        current = await client.get_autotest_status(user_id)
+        new_status = not current
+        await client.set_autotest_status(user_id, new_status)
+        await message.answer(f"🔄 Автотест переключен: {'Включён' if new_status else 'Выключен'}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
@@ -112,7 +126,6 @@ async def handle_document(message: Message, state: FSMContext):
             return
         file_path = await save_document(doc, "data")
         await state.update_data(data_path=file_path)
-        # Извлекаем месяц и год из имени файла
         month, year = extract_month_year_from_filename(file_name)
         await state.update_data(month=month, year=year)
         await message.answer(f"✅ Файл с данными «{file_name}» сохранён (Месяц: {month}, Год: {year}).")

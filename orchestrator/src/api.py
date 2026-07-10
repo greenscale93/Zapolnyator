@@ -79,3 +79,16 @@ async def stop_task(task_id: str):
     logger.info(f"Received stop for task {task_id}")
     await agent.stop_task(task_id)
     return {"status": "ok"}
+
+# === НОВЫЕ ЭНДПОИНТЫ ДЛЯ АВТОТЕСТА ===
+@router.get("/autotest/status/{user_id}")
+async def get_autotest_status(user_id: int):
+    status = await session_manager.get_auto_test_status(user_id)
+    return {"enabled": status}
+
+@router.post("/autotest/toggle/{user_id}")
+async def toggle_autotest(user_id: int):
+    current = await session_manager.get_auto_test_status(user_id)
+    new_status = not current
+    await session_manager.set_auto_test_status(user_id, new_status)
+    return {"enabled": new_status}
