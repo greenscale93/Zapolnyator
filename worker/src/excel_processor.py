@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 async def read_excel_structure(file_path: str) -> dict:
-    """Возвращает список листов и их колонки (из указанной строки заголовков)"""
     try:
         if os.path.exists(file_path):
             try:
@@ -113,6 +112,13 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
         if sheet_name not in wb.sheetnames:
             return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
         ws = wb[sheet_name]
+
+        # Удаляем все таблицы на листе, чтобы избежать повреждения
+        if hasattr(ws, 'tables'):
+            table_names = list(ws.tables.keys())
+            for table_name in table_names:
+                del ws.tables[table_name]
+                logger.info(f"Removed table: {table_name}")
 
         # 6. Определяем номер строки с заголовками в шаблоне (по умолчанию 2)
         header_row = mapping.get("header_row", 2)
