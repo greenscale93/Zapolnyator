@@ -128,9 +128,57 @@
   ],
   "read_values": [
     {
-      "key": "profit",
-      "label": "Прибыль отдела, мес, к зачету",
+      "key": "profit_acts",
+      "label": "Прибыль по актам",
       "row_name": "Прибыль отдела, мес, к зачету",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "profit_money",
+      "label": "Прибыль по деньгам",
+      "row_name": "Сверка отдела, руб",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "margin_acts",
+      "label": "Маржа по актам",
+      "row_name": "Валовая прибыль без НДС (маржа отдела)",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "margin_money",
+      "label": "Маржа по деньгам",
+      "row_name": "Приход ДС маржа",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "ffot_calculated",
+      "label": "ФОТ",
+      "row_name": "ФОТ расчетный, руб.",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "admin_expenses",
+      "label": "Административные расходы",
+      "row_name": "Административные затраты на человека, руб.",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    },
+    {
+      "key": "employees_count",
+      "label": "Количество сотрудников",
+      "row_name": "Кол-во сотрудников, включая руководителя",
       "row_column": 3,
       "month_row": 2,
       "month_offset": 0

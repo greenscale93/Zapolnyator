@@ -257,7 +257,19 @@ class OrchestratorAgent:
                             val_str = f"{val:,.2f}"
                         else:
                             val_str = str(val)
-                        msg = f"📊 {rr.get('label', rr.get('key', '?'))}: {val_str}"
+
+                        # Эмодзи по ключу
+                        emoji_map = {
+                            "profit_acts": "📈",
+                            "profit_money": "💰",
+                            "margin_acts": "📊",
+                            "margin_money": "💵",
+                            "ffot_calculated": "👥",
+                            "admin_expenses": "📋",
+                            "employees_count": "👤",
+                        }
+                        emoji = emoji_map.get(rr.get("key", ""), "📊")
+                        msg = f"{emoji} {rr.get('label', rr.get('key', '?'))}: {val_str}"
                         if diagnostic:
                             msg += f" ({cell})"
                     message_parts.append(msg)
