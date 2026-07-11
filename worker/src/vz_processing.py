@@ -62,6 +62,19 @@ def preprocess_vzaimoraschety(
                 f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}"
             )
 
+        # Для спецофисов: Подразделение = то же, что office_col (БДР/БДДС)
+        df.loc[mask_special_filled, "Подразделение"] = df.loc[mask_special_filled, office_col]
+
+        # Комментарий: добавляем префикс "<ПодразделениеКонтрагент>: "
+        sub_office_col = "ПодразделениеКонтрагент"
+        for idx in df[mask_special_filled].index:
+            office_name = str(df.loc[idx, sub_office_col]).strip() if pd.notna(df.loc[idx, sub_office_col]) else ""
+            orig_comment = str(df.loc[idx, "Комментарий"]).strip() if pd.notna(df.loc[idx, "Комментарий"]) else ""
+            if office_name:
+                df.loc[idx, "Комментарий"] = f"{office_name}: {orig_comment}" if orig_comment else office_name
+            else:
+                df.loc[idx, "Комментарий"] = orig_comment
+
     # 2. Пустые office_col – заполняем из словаря маппинга или заменой по ТипОборота
     mask_empty = df[office_col].isna() | (df[office_col].astype(str).str.strip() == "")
     if mask_empty.any():

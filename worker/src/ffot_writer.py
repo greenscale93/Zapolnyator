@@ -202,9 +202,9 @@ async def write_ffot_to_template(
     # Расчёт суммы
     ffot_value = calculate_ffot_sum(source_path)
 
-    # Открываем шаблон
+    # Открываем шаблон (БЕЗ data_only, чтобы не потерять формулы)
     try:
-        wb = openpyxl.load_workbook(template_path, data_only=True)
+        wb = openpyxl.load_workbook(template_path)
     except Exception:
         # Возможно зашифрован
         import tempfile
@@ -216,7 +216,7 @@ async def write_ffot_to_template(
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
                     file.decrypt(tmp)
                     tmp_path = tmp.name
-                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                wb = openpyxl.load_workbook(tmp_path)
                 import os
                 os.unlink(tmp_path)
             else:
