@@ -1,11 +1,13 @@
 #!/bin/bash
 set -e
 
+export LD_LIBRARY_PATH="/usr/lib/libreoffice/program:${LD_LIBRARY_PATH}"
+export PYTHONPATH="/usr/lib/libreoffice/program:${PYTHONPATH}"
+
 echo "Starting LibreOffice in background..."
 soffice --headless --norestore \
     --accept="socket,host=localhost,port=2002;urp;" &
 
-# Wait for LibreOffice socket
 echo "Waiting for LibreOffice to initialize..."
 sleep 5
 
