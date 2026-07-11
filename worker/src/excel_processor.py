@@ -30,8 +30,8 @@ async def recalculate_excel(file_path: str) -> dict:
     try:
         result = subprocess.run(
             [
-                "libreoffice", "--headless", "--calc",
-                "--infilter=Microsoft Excel 2007-365",
+                "libreoffice", "--headless",
+                "--convert-to", "xlsx:Calc MS Excel 2007 XML",
                 "--outdir", tmp_dir, file_path
             ],
             capture_output=True, text=True, timeout=30
