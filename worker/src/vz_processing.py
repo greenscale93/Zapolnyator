@@ -125,14 +125,19 @@ def preprocess_vzaimoraschety(
         group_keys = [
             "Подразделение", "Контрагент", "Проект", office_col, "Направление"
         ]
-        # Группировка: СуммаБезНДС суммируется, остальные колонки — first()
-        sum_cols = ['СуммаБезНДС']
+        # Схлопывание БДР/БДДС: оба имеют одинаковую сумму — берём .first()
+        # Комментарий — объединяем уникальные непустые из обеих строк
+        def _agg_comments(values):
+            unique = values.dropna().astype(str).unique()
+            unique = [v.strip() for v in unique if v.strip()]
+            return "; ".join(unique) if unique else ""
+
         agg_dict = {}
         for col in df_regular.columns:
             if col in group_keys:
                 continue
-            if col in sum_cols and col in df_regular.columns:
-                agg_dict[col] = 'sum'
+            if col == 'Комментарий':
+                agg_dict[col] = _agg_comments
             else:
                 agg_dict[col] = 'first'
         df_regular = df_regular.groupby(group_keys, as_index=False).agg(agg_dict)
