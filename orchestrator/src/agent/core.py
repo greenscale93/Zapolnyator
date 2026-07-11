@@ -140,7 +140,6 @@ class OrchestratorAgent:
                     )
                     return
 
-                # Сохраняем список офисов в сессии для сопоставления индексов
                 await self.session_manager.update_session(task_id, {
                     "status": "waiting_question",
                     "question": {
@@ -162,9 +161,8 @@ class OrchestratorAgent:
                     user_id=user_id,
                     reply_markup=reply_markup
                 )
-                return  # ждём ответа
+                return
 
-            # Все известны или ответы получены – запускаем apply
             vz_mapping_copy = dict(vz_mapping)
             vz_mapping_copy["custom_processing"] = dict(
                 vz_mapping["custom_processing"]
@@ -207,17 +205,14 @@ class OrchestratorAgent:
             await self._set_error(task_id, "No output file generated")
 
     async def handle_answer(self, task_id: str, answer_data: str):
-        """Делегирует обработку ответа MappingHandler."""
         await self.mapping_handler.process_answer(
             answer_data, self.session_manager, task_id
         )
 
     async def edit_mapping_command(self, user_id: int):
-        """Делегирует показ маппингов MappingHandler."""
         await self.mapping_handler.show_mappings(user_id)
 
     async def handle_delete_mapping(self, task_id: str, contractor: str):
-        """Делегирует удаление маппинга MappingHandler."""
         await self.mapping_handler.delete_mapping(
             task_id, contractor, self.session_manager
         )
