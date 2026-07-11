@@ -6,6 +6,24 @@
 2. GitHub Actions (`.github/workflows/deploy.yml`) автоматически деплоит на VPS
 3. Docker Compose перезапускает сервисы с обновлёнными образами
 
+### ⚠️ Важное правило
+**НИКОГДА** не запускайте `docker compose up -d --build` вручную после пуша.
+GitHub Actions делает это автоматически. Ручная сборка в момент деплоя приводит к
+конфликту и падению Actions (race condition). Если нужно что-то проверить —
+дождитесь завершения Actions.
+
+### Исключение — экстренный деплой
+Если Actions упал и нужно перезапустить вручную:
+1. Дождитесь, пока Actions завершится (статус `failure`)
+2. Только после этого можно запустить вручную
+
+```bash
+ssh root@31.130.131.233
+cd /home/root/Zapolnyator
+docker compose down
+docker compose up -d --build
+```
+
 ## Типичные ошибки после деплоя
 
 ### 🔴 ImportError — конфликт module.py и module/ пакета
