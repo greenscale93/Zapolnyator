@@ -206,6 +206,7 @@ class OrchestratorAgent:
                     month=month,
                     year=year
                 )
+                diagnostic = await self.session_manager.get_diagnostic_status(user_id)
                 for wr in write_results:
                     if "error" in wr:
                         await self.notifier.send_message(
@@ -213,10 +214,12 @@ class OrchestratorAgent:
                             user_id=user_id
                         )
                     else:
-                        await self.notifier.send_message(
-                            f"📊 {wr.get('label', wr.get('key', '?'))}: {wr.get('value', 0):,.2f} ({wr.get('cell', '?')})",
-                            user_id=user_id
-                        )
+                        val = wr.get('value', 0)
+                        val_str = f"{val:,.2f}".replace(",", " ").replace(".", ",")
+                        msg = f"📊 {wr.get('label', wr.get('key', '?'))}: {val_str}"
+                        if diagnostic:
+                            msg += f" ({wr.get('cell', '?')})"
+                        await self.notifier.send_message(msg, user_id=user_id)
             except Exception as e:
                 logger.warning(f"Write values failed (non-critical): {e}")
                 await self.notifier.send_message(
