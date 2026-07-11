@@ -8,6 +8,7 @@
 - write_ffot_to_template — запись в шаблон
 """
 import logging
+import re
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -20,6 +21,21 @@ MONTHS_RU = {
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
 }
+
+
+def _clean_numeric(value):
+    """Очищает значение от неразрывных пробелов и приводит к float."""
+    if isinstance(value, str):
+        cleaned = re.sub(r'[^\d,.-]', '', value.replace('\u00a0', '').replace(' ', ''))
+        cleaned = cleaned.replace(',', '.')
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def find_row_by_name(ws, column: int, name: str) -> Optional[int]:
@@ -141,11 +157,11 @@ def calculate_ffot_sum(source_path: str, columns_config: Optional[dict] = None) 
 
     total = 0.0
     if oklad_col:
-        total += df_ffot[oklad_col].fillna(0).astype(float).sum()
-        logger.info(f"FFOT: Оклад (колонка '{oklad_col}') = {df_ffot[oklad_col].fillna(0).astype(float).sum()}")
+        total += df_ffot[oklad_col].apply(_clean_numeric).sum()
+        logger.info(f"FFOT: Оклад (колонка '{oklad_col}') = {df_ffot[oklad_col].apply(_clean_numeric).sum()}")
     if premia_col:
-        total += df_ffot[premia_col].fillna(0).astype(float).sum()
-        logger.info(f"FFOT: Премия (колонка '{premia_col}') = {df_ffot[premia_col].fillna(0).astype(float).sum()}")
+        total += df_ffot[premia_col].apply(_clean_numeric).sum()
+        logger.info(f"FFOT: Премия (колонка '{premia_col}') = {df_ffot[premia_col].apply(_clean_numeric).sum()}")
 
     # Если не нашли Оклад/Премия — пробуем колонку Сумма
     if total == 0.0:
@@ -156,7 +172,7 @@ def calculate_ffot_sum(source_path: str, columns_config: Optional[dict] = None) 
                 amount_col = col
                 break
         if amount_col:
-            total = df_ffot[amount_col].fillna(0).astype(float).sum()
+            total = df_ffot[amount_col].apply(_clean_numeric).sum()
             logger.info(f"FFOT: Сумма (колонка '{amount_col}') = {total}")
 
     logger.info(f"FFOT: итоговая сумма = {total}")
