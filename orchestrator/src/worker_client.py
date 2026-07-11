@@ -46,3 +46,26 @@ class WorkerClient:
         if resp.get("status") == "success":
             return resp["result"]
         raise Exception(resp.get("error_message", "Unknown error"))
+
+    async def process_write_values(self, source_path: str, template_path: str, values: list, month, year) -> list:
+        resp = await self.call_tool("process_write_values", {
+            "source_path": source_path,
+            "template_path": template_path,
+            "values": values,
+            "month": month,
+            "year": year
+        })
+        if resp.get("status") == "success":
+            return resp["result"].get("results", [])
+        raise Exception(resp.get("error_message", "Unknown error"))
+
+    async def read_template_values(self, template_path: str, values: list, month, year) -> list:
+        resp = await self.call_tool("read_template_values", {
+            "template_path": template_path,
+            "values": values,
+            "month": month,
+            "year": year
+        })
+        if resp.get("status") == "success":
+            return resp["result"].get("results", [])
+        raise Exception(resp.get("error_message", "Unknown error"))

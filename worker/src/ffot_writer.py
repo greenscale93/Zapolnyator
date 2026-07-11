@@ -1,18 +1,20 @@
 """
-Запись значения ФактическийФОТ в шаблон отчёта.
+Запись/чтение значений в шаблон отчёта по конфигурации из rules.json.
 
-Содержит:
-- find_row_by_name — поиск строки по тексту в колонке
-- find_month_column — поиск колонки месяца в шапке
-- calculate_ffot_sum — расчёт суммы из выгрузки
-- write_ffot_to_template — запись в шаблон
+Поддерживает:
+- write_values (тип ffot) — расчёт + запись в ячейку
+- read_values — чтение значения из ячейки
 """
 import logging
 import re
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
-from typing import Optional
+from typing import Optional, List
+
+from src.template_reader import (
+    find_row_by_name, find_month_column, read_cell_at, open_workbook_and_sheet
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,37 @@ MONTHS_RU = {
     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
 }
+
+
+def get_month_name(month) -> str:
+    """Возвращает название месяца по номеру (1-12) или строке."""
+    if isinstance(month, str):
+        return month
+    return MONTHS_RU.get(month, str(month))
+
+
+def get_month_number(month_name: str) -> int:
+    """Конвертирует название месяца в число."""
+    rev_map = {v: k for k, v in MONTHS_RU.items()}
+    num = rev_map.get(month_name)
+    if num is None:
+        raise ValueError(f"Неизвестное название месяца: {month_name}")
+    return num
+
+
+def get_target_month_name(month, offset: int) -> str:
+    """Возвращает название месяца со смещением (0 = текущий, -1 = предыдущий)."""
+    if isinstance(month, str):
+        month_num = get_month_number(month)
+    else:
+        month_num = month
+    target = month_num + offset
+    # Циклический сдвиг в пределах года
+    while target < 1:
+        target += 12
+    while target > 12:
+        target -= 12
+    return MONTHS_RU[target]
 
 
 def _clean_numeric(value):
@@ -38,221 +71,253 @@ def _clean_numeric(value):
         return 0.0
 
 
-def find_row_by_name(ws, column: int, name: str) -> Optional[int]:
-    """
-    Находит номер строки, в которой в указанной колонке (1-based)
-    содержится искомый текст.
-
-    Args:
-        ws: Лист openpyxl.
-        column: Номер колонки (1 = A, 3 = C, etc.).
-        name: Текст для поиска.
-
-    Returns:
-        Номер строки или None, если не найдено.
-    """
-    for row in range(1, ws.max_row + 1):
-        cell_value = ws.cell(row=row, column=column).value
-        if cell_value and name.strip() in str(cell_value).strip():
-            logger.info(f"Найдена строка '{name}' в {get_column_letter(column)}{row}")
-            return row
-    logger.warning(f"Строка '{name}' не найдена в колонке {get_column_letter(column)}")
-    return None
+# ===================== WRITE VALUES =====================
 
 
-def find_month_column(ws, month_name: str, search_row: int = 2) -> Optional[int]:
-    """
-    Находит номер колонки, в которой в указанной строке шапки
-    содержится название месяца.
-
-    Args:
-        ws: Лист openpyxl.
-        month_name: Название месяца (например, "Май").
-        search_row: Строка шапки с месяцами (по умолчанию 2).
-
-    Returns:
-        Номер колонки (1-based) или None.
-    """
-    for col in range(1, ws.max_column + 1):
-        cell_value = ws.cell(row=search_row, column=col).value
-        if cell_value and month_name.strip() in str(cell_value).strip():
-            logger.info(f"Найден месяц '{month_name}' в {get_column_letter(col)}{search_row}")
-            return col
-    logger.warning(f"Месяц '{month_name}' не найден в строке {search_row}")
-    return None
-
-
-def get_previous_month_name(month) -> str:
-    """Возвращает название месяца, предшествующего указанному.
-
-    month может быть числом (1-12) или строкой-названием ("Июнь").
-    """
-    if isinstance(month, str):
-        # Конвертируем название месяца в число
-        rev_map = {v: k for k, v in MONTHS_RU.items()}
-        month_num = rev_map.get(month)
-        if month_num is None:
-            raise ValueError(f"Неизвестное название месяца: {month}")
-    else:
-        month_num = month
-    prev = month_num - 1
-    if prev == 0:
-        prev = 12
-    return MONTHS_RU[prev]
-
-
-def calculate_ffot_sum(source_path: str, columns_config: Optional[dict] = None) -> float:
-    """
-    Читает исходный файл выгрузки, фильтрует строки с ТипЗаписи="ФактическийФОТ"
-    и суммирует значения из колонок Оклад и Премия.
-
-    Args:
-        source_path: Путь к файлу выгрузки (Excel).
-        columns_config: Опциональный маппинг колонок (как в user_mapping).
-
-    Returns:
-        Сумма ФОТ.
-    """
-    df = pd.read_excel(source_path, header=0)
-    logger.info(f"FFOT: загружено {len(df)} строк из {source_path}")
-    logger.info(f"FFOT: колонки: {list(df.columns)}")
-
-    # Определяем колонку с типом записи
-    if columns_config and columns_config.get("type"):
-        type_col = columns_config["type"]
-    else:
-        type_col = None
-        for col in df.columns:
-            col_lower = col.lower().strip()
-            if col_lower in ("типзаписи", "тип записи", "тип", "recordtype"):
-                type_col = col
-                break
-
-    if not type_col:
-        raise ValueError("Не найдена колонка с типом записи (ТипЗаписи)")
-
-    # Фильтр: только ФактическийФОТ
-    mask = df[type_col].astype(str).str.strip() == "ФактическийФОТ"
-    df_ffot = df[mask]
-
-    if df_ffot.empty:
-        logger.warning("Нет строк с ТипЗаписи='ФактическийФОТ'")
-        return 0.0
-
-    logger.info(f"FFOT: найдено {len(df_ffot)} строк с ФактическийФОТ")
-
-    # Определяем колонки Оклад и Премия
-    if columns_config:
-        oklad_col = columns_config.get("oklad")
-        premia_col = columns_config.get("premia")
-    else:
-        oklad_col = None
-        premia_col = None
-        for col in df_ffot.columns:
-            col_lower = col.lower().strip()
-            if oklad_col is None and col_lower in ("оклад", "salary"):
-                oklad_col = col
-            if premia_col is None and col_lower in ("премия", "bonus"):
-                premia_col = col
-
-    total = 0.0
-    if oklad_col:
-        total += df_ffot[oklad_col].apply(_clean_numeric).sum()
-        logger.info(f"FFOT: Оклад (колонка '{oklad_col}') = {df_ffot[oklad_col].apply(_clean_numeric).sum()}")
-    if premia_col:
-        total += df_ffot[premia_col].apply(_clean_numeric).sum()
-        logger.info(f"FFOT: Премия (колонка '{premia_col}') = {df_ffot[premia_col].apply(_clean_numeric).sum()}")
-
-    # Если не нашли Оклад/Премия — пробуем колонку Сумма
-    if total == 0.0:
-        amount_col = None
-        for col in df_ffot.columns:
-            col_lower = col.lower().strip()
-            if col_lower in ("сумма", "amount"):
-                amount_col = col
-                break
-        if amount_col:
-            total = df_ffot[amount_col].apply(_clean_numeric).sum()
-            logger.info(f"FFOT: Сумма (колонка '{amount_col}') = {total}")
-
-    logger.info(f"FFOT: итоговая сумма = {total}")
-    return total
-
-
-async def write_ffot_to_template(
+async def _write_ffot(
     source_path: str,
     template_path: str,
+    config: dict,
     month,
-    year: int,
-    password: str = "987456"
+    year: int
 ) -> dict:
     """
-    Вычисляет ФактическийФОТ из выгрузки и записывает в шаблон.
-
-    Логика:
-    1. Читает source, фильтрует "ФактическийФОТ", суммирует Оклад+Премия
-    2. Определяет месяц, предшествующий указанному (например, для 06 → Май)
-    3. Ищет колонку с этим месяцем в строке 2 шаблона
-    4. Ищет строку с "ФОТ фактический, руб." в колонке C
-    5. Записывает значение в найденную ячейку
-
-    Returns:
-        dict с {ffot_value, cell (например "T46")}
+    Обрабатывает write_value типа 'ffot':
+    - читает source, фильтрует ФактическийФОТ
+    - суммирует Оклад+Премия с учётом исключений
+    - находит целевую ячейку по config
+    - записывает значение
     """
-    # Расчёт суммы
-    ffot_value = calculate_ffot_sum(source_path)
+    # 1. Расчёт суммы
+    exclude_emp = config.get("exclude_employee", {})
+    ffot_value = _calculate_ffot_sum(source_path, exclude_employee=exclude_emp)
 
-    # Открываем шаблон (БЕЗ data_only, чтобы не потерять формулы)
+    # 2. Открываем шаблон (без data_only, чтобы не потерять формулы)
     try:
         wb = openpyxl.load_workbook(template_path)
     except Exception:
-        # Возможно зашифрован
         import tempfile
         import msoffcrypto
         with open(template_path, 'rb') as f:
             file = msoffcrypto.OfficeFile(f)
             if file.is_encrypted():
-                file.load_key(password=password)
+                file.load_key(password="987456")
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
                     file.decrypt(tmp)
                     tmp_path = tmp.name
                 wb = openpyxl.load_workbook(tmp_path)
-                import os
                 os.unlink(tmp_path)
             else:
                 raise
 
     ws = wb["Отчетность БИТ 2026"]
 
-    # Определяем предыдущий месяц
-    prev_month_name = get_previous_month_name(month)
-
-    # Ищем колонку
-    col_idx = find_month_column(ws, prev_month_name)
+    # 3. Целевая колонка
+    target_month = get_target_month_name(month, config.get("month_offset", -1))
+    col_idx = find_month_column(
+        ws, target_month, config.get("month_row", 2)
+    )
     if col_idx is None:
         wb.close()
-        raise ValueError(
-            f"Не найден месяц '{prev_month_name}' в строке 2 шаблона"
-        )
+        raise ValueError(f"Не найден месяц '{target_month}' в строке {config.get('month_row', 2)}")
 
-    # Ищем строку с "ФОТ фактический, руб."
-    row_num = find_row_by_name(ws, 3, "ФОТ фактический, руб.")
+    # 4. Целевая строка
+    row_num = find_row_by_name(
+        ws, config.get("row_column", 3), config.get("row_name", "")
+    )
     if row_num is None:
         wb.close()
         raise ValueError(
-            "Не найдена строка 'ФОТ фактический, руб.' в колонке C шаблона"
+            f"Не найдена строка '{config.get('row_name')}' "
+            f"в колонке {get_column_letter(config.get('row_column', 3))}"
         )
 
-    # Записываем значение
+    # 5. Запись
     cell_ref = f"{get_column_letter(col_idx)}{row_num}"
     ws.cell(row=row_num, column=col_idx).value = ffot_value
-
-    # Сохраняем
     wb.save(template_path)
     wb.close()
-    logger.info(f"ФОТ записан: {ffot_value} в {cell_ref}")
+
+    logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
+    return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", "")}
+
+
+def _calculate_ffot_sum(
+    source_path: str,
+    exclude_employee: Optional[dict] = None
+) -> float:
+    """
+    Читает исходный файл, фильтрует ФактическийФОТ,
+    суммирует Оклад+Премия с исключениями.
+
+    exclude_employee = {"Сорокин Илья Вячеславович": ["Премия"]}
+    означает: для указанного сотрудника не учитывать Премию.
+    """
+    df = pd.read_excel(source_path, header=0)
+    logger.info(f"FFOT: загружено {len(df)} строк, колонки: {list(df.columns)}")
+
+    # Колонка типа записи
+    type_col = None
+    for col in df.columns:
+        if col.lower().strip() in ("типзаписи", "тип записи", "тип", "recordtype"):
+            type_col = col
+            break
+    if not type_col:
+        raise ValueError("Не найдена колонка с типом записи (ТипЗаписи)")
+
+    # Фильтр ФактическийФОТ
+    df_ffot = df[df[type_col].astype(str).str.strip() == "ФактическийФОТ"]
+    if df_ffot.empty:
+        logger.warning("Нет строк с ТипЗаписи='ФактическийФОТ'")
+        return 0.0
+
+    # Колонки Оклад / Премия / Сумма / Сотрудник / ВидНачисления
+    oklad_col = premia_col = amount_col = emp_col = payroll_col = None
+    for col in df_ffot.columns:
+        c = col.lower().strip()
+        if oklad_col is None and c in ("оклад", "salary"):
+            oklad_col = col
+        if premia_col is None and c in ("премия", "bonus"):
+            premia_col = col
+        if amount_col is None and c in ("сумма", "amount"):
+            amount_col = col
+        if emp_col is None and c in ("сотрудник", "employee", "фио"):
+            emp_col = col
+        if payroll_col is None and c in ("видначислениязп", "payrolltype"):
+            payroll_col = col
+
+    total = 0.0
+
+    # Суммируем пострчно с учётом исключений
+    for _, row in df_ffot.iterrows():
+        employee = str(row.get(emp_col, "")).strip() if emp_col else ""
+        payroll_type = str(row.get(payroll_col, "")).strip() if payroll_col else ""
+
+        # Проверяем исключения
+        skip_row = False
+        if exclude_employee and employee in exclude_employee:
+            excluded_types = exclude_employee[employee]
+            if payroll_type in excluded_types:
+                logger.info(
+                    f"FFOT: исключена Премия для {employee} ({payroll_type})"
+                )
+                skip_row = True
+
+        if not skip_row:
+            if oklad_col:
+                total += _clean_numeric(row.get(oklad_col, 0))
+            if premia_col:
+                total += _clean_numeric(row.get(premia_col, 0))
+
+    # Fallback: если Оклад/Премия не найдены — используем Сумма
+    if total == 0.0 and amount_col:
+        total = df_ffot[amount_col].apply(_clean_numeric).sum()
+
+    logger.info(f"FFOT: итог = {total}")
+    return total
+
+
+# ===================== READ VALUES =====================
+
+
+def read_value_from_template(
+    template_path: str,
+    config: dict,
+    month,
+    year: int
+) -> dict:
+    """
+    Читает значение из шаблона по конфигурации read_value.
+
+    config = {
+        "key": "profit",
+        "label": "Прибыль отдела, мес, к зачету",
+        "row_name": "Прибыль отдела, мес, к зачету",
+        "row_column": 3,
+        "month_row": 2,
+        "month_offset": 0
+    }
+    """
+    wb, ws = open_workbook_and_sheet(template_path, data_only=True)
+
+    # Целевая колонка (текущий месяц при offset=0)
+    target_month = get_target_month_name(month, config.get("month_offset", 0))
+    col_idx = find_month_column(ws, target_month, config.get("month_row", 2))
+    if col_idx is None:
+        wb.close()
+        raise ValueError(
+            f"Не найден месяц '{target_month}' в строке {config.get('month_row', 2)}"
+        )
+
+    # Целевая строка
+    row_num = find_row_by_name(
+        ws, config.get("row_column", 3), config.get("row_name", "")
+    )
+    if row_num is None:
+        wb.close()
+        raise ValueError(
+            f"Не найдена строка '{config.get('row_name')}' "
+            f"в колонке {get_column_letter(config.get('row_column', 3))}"
+        )
+
+    # Чтение (с учётом объединённых ячеек)
+    value = read_cell_at(ws, row_num, col_idx)
+    wb.close()
+
+    cell_ref = f"{get_column_letter(col_idx)}{row_num}"
+    logger.info(f"Прочитано {config.get('key')}: {value} из {cell_ref}")
 
     return {
-        "ffot_value": ffot_value,
+        "key": config.get("key"),
+        "label": config.get("label", ""),
+        "value": value,
         "cell": cell_ref
     }
+
+
+async def process_write_values(
+    source_path: str,
+    template_path: str,
+    write_values: List[dict],
+    month,
+    year: int
+) -> list:
+    """Обрабатывает все write_values из конфига."""
+    results = []
+    for cfg in write_values:
+        try:
+            if cfg.get("type") == "ffot":
+                result = await _write_ffot(
+                    source_path, template_path, cfg, month, year
+                )
+                results.append(result)
+            else:
+                logger.warning(f"Неизвестный тип write_value: {cfg.get('type')}")
+        except Exception as e:
+            logger.exception(f"Ошибка write_value {cfg.get('key')}: {e}")
+            results.append({"key": cfg.get("key"), "error": str(e)})
+    return results
+
+
+def process_read_values(
+    template_path: str,
+    read_values: List[dict],
+    month,
+    year: int
+) -> list:
+    """Обрабатывает все read_values из конфига."""
+    results = []
+    for cfg in read_values:
+        try:
+            result = read_value_from_template(
+                template_path, cfg, month, year
+            )
+            results.append(result)
+        except Exception as e:
+            logger.exception(f"Ошибка read_value {cfg.get('key')}: {e}")
+            results.append({
+                "key": cfg.get("key"),
+                "label": cfg.get("label", ""),
+                "error": str(e)
+            })
+    return results

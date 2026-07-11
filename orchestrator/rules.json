@@ -93,7 +93,9 @@
         "ТипЗаписи": "Взаиморасчет",
         "Направление": ["Доход", "Расход"]
       },
-      "exclude_filters": {},
+      "exclude_filters": {
+        "Подразделение": "ГКП 10.6 (Емельянова)"
+      },
       "custom_processing": {
         "type": "vzaimoraschety",
         "direction_field": "Направление",
@@ -109,5 +111,29 @@
         }
       }
     }
-  }
+  },
+  "write_values": [
+    {
+      "key": "ffot",
+      "type": "ffot",
+      "label": "ФОТ фактический, руб.",
+      "row_name": "ФОТ фактический, руб.",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": -1,
+      "exclude_employee": {
+        "Сорокин Илья Вячеславович": ["Премия"]
+      }
+    }
+  ],
+  "read_values": [
+    {
+      "key": "profit",
+      "label": "Прибыль отдела, мес, к зачету",
+      "row_name": "Прибыль отдела, мес, к зачету",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0
+    }
+  ]
 }

@@ -10,7 +10,7 @@ from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import read_excel_structure, apply_sheet_mapping
 from src.vz_utils import get_empty_vz_contractors
 from src.template_reader import get_template_offices
-from src.ffot_writer import write_ffot_to_template
+from src.ffot_writer import process_write_values, process_read_values
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -118,18 +118,70 @@ async def call_tool(request: ToolRequest):
             template_path = request.arguments["template_path"]
             month = request.arguments["month"]
             year = request.arguments["year"]
-            password = request.arguments.get("password", "987456")
+            config = request.arguments.get("config", {})
             if not os.path.exists(source_path):
                 return ToolResponse(status="error", error_message=f"Source file not found: {source_path}")
             if not os.path.exists(template_path):
                 return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
             try:
-                result = await write_ffot_to_template(
-                    source_path, template_path, month, year, password
-                )
-                return ToolResponse(status="success", result=result)
+                # Если передан config из rules.json — используем config-driven подход
+                if config:
+                    results = await process_write_values(
+                        source_path, template_path, [config], month, year
+                    )
+                    return ToolResponse(status="success", result={"results": results})
+                else:
+                    # Старый формат для обратной совместимости
+                    from src.ffot_writer import _write_ffot
+                    default_config = {
+                        "key": "ffot",
+                        "row_name": "ФОТ фактический, руб.",
+                        "row_column": 3,
+                        "month_row": 2,
+                        "month_offset": -1,
+                        "label": "ФОТ фактический, руб."
+                    }
+                    result = await _write_ffot(
+                        source_path, template_path, default_config, month, year
+                    )
+                    return ToolResponse(status="success", result=result)
             except Exception as e:
                 logger.exception("write_ffot_value error")
+                return ToolResponse(status="error", error_message=str(e))
+
+        elif request.tool == "process_write_values":
+            source_path = request.arguments["source_path"]
+            template_path = request.arguments["template_path"]
+            month = request.arguments["month"]
+            year = request.arguments["year"]
+            values = request.arguments.get("values", [])
+            if not os.path.exists(source_path):
+                return ToolResponse(status="error", error_message=f"Source file not found: {source_path}")
+            if not os.path.exists(template_path):
+                return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
+            try:
+                results = await process_write_values(
+                    source_path, template_path, values, month, year
+                )
+                return ToolResponse(status="success", result={"results": results})
+            except Exception as e:
+                logger.exception("process_write_values error")
+                return ToolResponse(status="error", error_message=str(e))
+
+        elif request.tool == "read_template_values":
+            template_path = request.arguments["template_path"]
+            month = request.arguments["month"]
+            year = request.arguments["year"]
+            values = request.arguments.get("values", [])
+            if not os.path.exists(template_path):
+                return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
+            try:
+                results = process_read_values(
+                    template_path, values, month, year
+                )
+                return ToolResponse(status="success", result={"results": results})
+            except Exception as e:
+                logger.exception("read_template_values error")
                 return ToolResponse(status="error", error_message=str(e))
                     
         else:

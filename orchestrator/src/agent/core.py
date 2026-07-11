@@ -195,27 +195,64 @@ class OrchestratorAgent:
                 task_id, {"output_path": output_path}
             )
 
-        # Запись ФактическийФОТ в шаблон
-        if output_path:
+        # ---- Write Values (из rules.json) ----
+        write_values = self.rules.get("write_values", [])
+        if output_path and write_values:
             try:
-                result = await self.worker_client.write_ffot_value(
+                write_results = await self.worker_client.process_write_values(
                     source_path=data_file_path,
                     template_path=output_path,
+                    values=write_values,
                     month=month,
                     year=year
                 )
-                ffot_value = result.get("ffot_value", 0)
-                cell = result.get("cell", "?")
-                await self.notifier.send_message(
-                    f"📊 ФОТ фактический: {ffot_value:,.2f} записан в {cell}",
-                    user_id=user_id
-                )
+                for wr in write_results:
+                    if "error" in wr:
+                        await self.notifier.send_message(
+                            f"⚠️ {wr.get('label', wr.get('key', '?'))}: ошибка {wr['error']}",
+                            user_id=user_id
+                        )
+                    else:
+                        await self.notifier.send_message(
+                            f"📊 {wr.get('label', wr.get('key', '?'))}: {wr.get('value', 0):,.2f} ({wr.get('cell', '?')})",
+                            user_id=user_id
+                        )
             except Exception as e:
-                logger.warning(f"FFOT write failed (non-critical): {e}")
+                logger.warning(f"Write values failed (non-critical): {e}")
                 await self.notifier.send_message(
-                    f"⚠️ Не удалось записать ФОТ: {str(e)}",
-                    user_id=user_id
+                    f"⚠️ Ошибка записи значений: {str(e)}", user_id=user_id
                 )
+
+        # ---- Read Values (из rules.json) ----
+        message_parts = []
+        read_values = self.rules.get("read_values", [])
+        if output_path and read_values:
+            try:
+                read_results = await self.worker_client.read_template_values(
+                    template_path=output_path,
+                    values=read_values,
+                    month=month,
+                    year=year
+                )
+                for rr in read_results:
+                    if "error" in rr:
+                        message_parts.append(
+                            f"⚠️ {rr.get('label', rr.get('key', '?'))}: ошибка"
+                        )
+                    else:
+                        val = rr.get("value", "")
+                        # Форматируем число, если это число
+                        if isinstance(val, (int, float)):
+                            val = f"{val:,.2f}"
+                        message_parts.append(
+                            f"📊 {rr.get('label', rr.get('key', '?'))}: {val}"
+                        )
+                if message_parts:
+                    await self.notifier.send_message(
+                        "\n".join(message_parts), user_id=user_id
+                    )
+            except Exception as e:
+                logger.warning(f"Read values failed (non-critical): {e}")
 
         if output_path:
             await self.session_manager.update_session(task_id, {
