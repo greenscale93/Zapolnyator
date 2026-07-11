@@ -125,7 +125,17 @@ def preprocess_vzaimoraschety(
         group_keys = [
             "Подразделение", "Контрагент", "Проект", office_col, "Направление"
         ]
-        df_regular = df_regular.groupby(group_keys, as_index=False).first()
+        # Группировка: СуммаБезНДС суммируется, остальные колонки — first()
+        sum_cols = ['СуммаБезНДС']
+        agg_dict = {}
+        for col in df_regular.columns:
+            if col in group_keys:
+                continue
+            if col in sum_cols and col in df_regular.columns:
+                agg_dict[col] = 'sum'
+            else:
+                agg_dict[col] = 'first'
+        df_regular = df_regular.groupby(group_keys, as_index=False).agg(agg_dict)
         for col in [turnover_field, "ПодразделениеКонтрагент"]:
             if col in df_regular.columns:
                 df_regular.drop(columns=[col], inplace=True)
