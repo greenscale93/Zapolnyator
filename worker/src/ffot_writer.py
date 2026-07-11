@@ -101,6 +101,9 @@ async def _write_ffot(
         raise ValueError(f"Не найдена строка '{config.get('row_name')}'")
 
     # 3. Запись через LoClient
+    col_letter = chr(64 + col_idx) if col_idx <= 26 else f"col{col_idx}"
+    cell_ref = f"{col_letter}{row_num}"
+
     doc = await lo_client.open_document(template_path)
     try:
         ws = await lo_client.get_sheet(doc, "Отчетность БИТ 2026")
