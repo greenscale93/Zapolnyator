@@ -65,6 +65,16 @@ class OrchestratorClient:
     async def set_autotest_status(self, user_id: int, enabled: bool):
         url = f"{self.base_url}/api/v1/autotest/toggle/{user_id}"
         await self._request_with_retry("POST", url)
+
+    # === ДИАГНОСТИКА ===
+    async def get_diagnostic_status(self, user_id: int) -> bool:
+        url = f"{self.base_url}/api/v1/diagnostic/status/{user_id}"
+        data = await self._request_with_retry("GET", url)
+        return data.get("enabled", False)
+
+    async def set_diagnostic_status(self, user_id: int, enabled: bool):
+        url = f"{self.base_url}/api/v1/diagnostic/toggle/{user_id}"
+        await self._request_with_retry("POST", url)
         
     async def edit_mapping(self, user_id: int):
         url = f"{self.base_url}/api/v1/edit_mapping"

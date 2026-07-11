@@ -59,6 +59,18 @@ async def toggle_autotest(user_id: int):
     await session_manager.set_auto_test_status(user_id, new_status)
     return {"enabled": new_status}
 
+@router.get("/api/v1/diagnostic/status/{user_id}")
+async def get_diagnostic_status(user_id: int):
+    enabled = await session_manager.get_diagnostic_status(user_id)
+    return {"enabled": enabled}
+
+@router.post("/api/v1/diagnostic/toggle/{user_id}")
+async def toggle_diagnostic(user_id: int):
+    current = await session_manager.get_diagnostic_status(user_id)
+    new_status = not current
+    await session_manager.set_diagnostic_status(user_id, new_status)
+    return {"enabled": new_status}
+
 @router.post("/api/v1/edit_mapping")
 async def edit_mapping(request: EditMappingRequest):
     await agent.edit_mapping_command(request.user_id)

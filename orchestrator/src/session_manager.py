@@ -48,3 +48,13 @@ class SessionManager:
     async def set_auto_test_status(self, user_id: int, enabled: bool):
         key = f"autotest:{user_id}"
         await self.client.set(key, "true" if enabled else "false")
+
+    # === ДИАГНОСТИКА ===
+    async def get_diagnostic_status(self, user_id: int) -> bool:
+        key = f"diagnostic:{user_id}"
+        val = await self.client.get(key)
+        return val == "true"
+
+    async def set_diagnostic_status(self, user_id: int, enabled: bool):
+        key = f"diagnostic:{user_id}"
+        await self.client.set(key, "true" if enabled else "false")

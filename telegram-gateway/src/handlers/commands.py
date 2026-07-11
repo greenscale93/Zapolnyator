@@ -60,6 +60,21 @@ async def cmd_autotest(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}")
 
 
+@router.message(Command("diagnostic"))
+async def cmd_diagnostic(message: Message):
+    client = OrchestratorClient()
+    user_id = message.from_user.id
+    try:
+        current = await client.get_diagnostic_status(user_id)
+        new_status = not current
+        await client.set_diagnostic_status(user_id, new_status)
+        await message.answer(
+            f"🔍 Диагностика {'включена' if new_status else 'выключена'}"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, state: FSMContext):
     data = await state.get_data()

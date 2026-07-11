@@ -227,6 +227,9 @@ class OrchestratorAgent:
         message_parts = []
         read_values = self.rules.get("read_values", [])
         if output_path and read_values:
+            # Проверяем режим диагностики
+            diagnostic = await self.session_manager.get_diagnostic_status(user_id)
+
             try:
                 read_results = await self.worker_client.read_template_values(
                     template_path=output_path,
@@ -236,25 +239,26 @@ class OrchestratorAgent:
                 )
                 for rr in read_results:
                     if "error" in rr:
-                        message_parts.append(
-                            f"⚠️ {rr.get('label', rr.get('key', '?'))}: ошибка"
-                        )
+                        msg = f"⚠️ {rr.get('label', rr.get('key', '?'))}: ошибка"
                     else:
                         val = rr.get("value")
-                        # Форматируем число или показываем "пусто"
+                        cell = rr.get("cell", "?")
                         if val is None:
                             val_str = "пусто"
                         elif isinstance(val, (int, float)):
                             val_str = f"{val:,.2f}"
                         else:
                             val_str = str(val)
-                        message_parts.append(
-                            f"📊 {rr.get('label', rr.get('key', '?'))}: {val_str}"
-                        )
+                        msg = f"📊 {rr.get('label', rr.get('key', '?'))}: {val_str}"
+                        if diagnostic:
+                            msg += f" ({cell})"
+                    message_parts.append(msg)
                 if message_parts:
                     await self.notifier.send_message(
                         "\n".join(message_parts), user_id=user_id
                     )
+                    if diagnostic:
+                        logger.info(f"Diagnostic read_values: {message_parts}")
             except Exception as e:
                 logger.warning(f"Read values failed (non-critical): {e}")
 
