@@ -35,3 +35,14 @@ class WorkerClient:
         if resp.get("status") == "success":
             return resp["result"]["offices"]
         raise Exception(resp.get("error_message", "Unknown error"))
+
+    async def write_ffot_value(self, source_path: str, template_path: str, month: int, year: int) -> dict:
+        resp = await self.call_tool("write_ffot_value", {
+            "source_path": source_path,
+            "template_path": template_path,
+            "month": month,
+            "year": year
+        })
+        if resp.get("status") == "success":
+            return resp["result"]
+        raise Exception(resp.get("error_message", "Unknown error"))

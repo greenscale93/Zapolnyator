@@ -10,6 +10,7 @@ from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import read_excel_structure, apply_sheet_mapping
 from src.vz_utils import get_empty_vz_contractors
 from src.template_reader import get_template_offices
+from src.ffot_writer import write_ffot_to_template
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -110,6 +111,25 @@ async def call_tool(request: ToolRequest):
                 return ToolResponse(status="success", result={"offices": offices})
             except Exception as e:
                 logger.exception("read_template_offices error")
+                return ToolResponse(status="error", error_message=str(e))
+
+        elif request.tool == "write_ffot_value":
+            source_path = request.arguments["source_path"]
+            template_path = request.arguments["template_path"]
+            month = request.arguments["month"]
+            year = request.arguments["year"]
+            password = request.arguments.get("password", "987456")
+            if not os.path.exists(source_path):
+                return ToolResponse(status="error", error_message=f"Source file not found: {source_path}")
+            if not os.path.exists(template_path):
+                return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
+            try:
+                result = await write_ffot_to_template(
+                    source_path, template_path, month, year, password
+                )
+                return ToolResponse(status="success", result=result)
+            except Exception as e:
+                logger.exception("write_ffot_value error")
                 return ToolResponse(status="error", error_message=str(e))
                     
         else:

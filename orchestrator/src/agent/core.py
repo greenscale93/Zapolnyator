@@ -195,6 +195,28 @@ class OrchestratorAgent:
                 task_id, {"output_path": output_path}
             )
 
+        # Запись ФактическийФОТ в шаблон
+        if output_path:
+            try:
+                result = await self.worker_client.write_ffot_value(
+                    source_path=data_file_path,
+                    template_path=output_path,
+                    month=month,
+                    year=year
+                )
+                ffot_value = result.get("ffot_value", 0)
+                cell = result.get("cell", "?")
+                await self.notifier.send_message(
+                    f"📊 ФОТ фактический: {ffot_value:,.2f} записан в {cell}",
+                    user_id=user_id
+                )
+            except Exception as e:
+                logger.warning(f"FFOT write failed (non-critical): {e}")
+                await self.notifier.send_message(
+                    f"⚠️ Не удалось записать ФОТ: {str(e)}",
+                    user_id=user_id
+                )
+
         if output_path:
             await self.session_manager.update_session(task_id, {
                 "status": "done",
