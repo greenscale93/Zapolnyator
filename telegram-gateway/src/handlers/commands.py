@@ -6,7 +6,7 @@ import logging
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message
 
 from src.client import OrchestratorClient
 from src.utils.file_storage import get_last_files
@@ -15,16 +15,6 @@ from .polling import start_processing
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-
-def main_keyboard():
-    """Стандартная клавиатура с основными командами."""
-    kb = [
-        [KeyboardButton(text="/autotest")],
-        [KeyboardButton(text="/edit_mapping")],
-        [KeyboardButton(text="/reset"), KeyboardButton(text="/stop")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
 @router.message(Command("start", "help"))
@@ -36,30 +26,23 @@ async def cmd_start(message: Message, state: FSMContext):
     if auto_test:
         excel_path, data_path = get_last_files()
         if excel_path and data_path and os.path.exists(excel_path) and os.path.exists(data_path):
-            await message.answer(
-                "🔄 Автотест включён: использую последние файлы...",
-                reply_markup=main_keyboard()
-            )
+            await message.answer("🔄 Автотест включён: использую последние файлы...")
             await state.update_data(excel_path=excel_path, data_path=data_path)
             await start_processing(message, state, excel_path, data_path)
             return
         else:
             await message.answer(
                 "⚠️ Автотест включён, но сохранённые файлы не найдены. "
-                "Отправьте файлы вручную.",
-                reply_markup=main_keyboard()
+                "Отправьте файлы вручную."
             )
     else:
-        await message.answer(
-            "Привет! Отправьте два файла или используйте команды.",
-            reply_markup=main_keyboard()
-        )
+        await message.answer("Привет! Отправьте два файла или используйте команды.")
 
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Состояние сброшено.", reply_markup=main_keyboard())
+    await message.answer("Состояние сброшено.")
 
 
 @router.message(Command("autotest"))
@@ -71,8 +54,7 @@ async def cmd_autotest(message: Message, state: FSMContext):
         new_status = not current
         await client.set_autotest_status(user_id, new_status)
         await message.answer(
-            f"🔄 Автотест {'включён' if new_status else 'выключен'}",
-            reply_markup=main_keyboard()
+            f"🔄 Автотест {'включён' if new_status else 'выключен'}"
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
@@ -86,7 +68,7 @@ async def cmd_stop(message: Message, state: FSMContext):
         client = OrchestratorClient()
         await client.stop_task(task_id)
         await state.clear()
-        await message.answer("🛑 Задача остановлена.", reply_markup=main_keyboard())
+        await message.answer("🛑 Задача остановлена.")
     else:
         await message.answer("Нет активной задачи.")
 
