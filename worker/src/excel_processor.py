@@ -20,10 +20,34 @@ async def _save_and_fix_formats(wb, output_path: str) -> None:
     """
     Сохраняет workbook через LibreOffice, чтобы не повредить форматы дат и формулы.
 
-    openpyxl при wb.save() может испортить форматы ячеек (особенно даты).
-    Поэтому: сохраняем openpyxl'ом во временный файл → конвертируем через
-    LibreOffice в правильный XLSX → заменяем оригинал.
+    1. Конвертирует все datetime-ячейки в текст "Месяц Год" (Май 2026)
+    2. Сохраняет openpyxl'ом во временный файл
+    3. Конвертирует через LibreOffice в правильный XLSX
+    4. Заменяет оригинал
     """
+    # Карта месяцев для конвертации дат
+    months_ru = {
+        1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+        5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+        9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+    }
+
+    def _convert_date_to_text(value):
+        """Конвертирует datetime в текст 'Май 2026'. Если не дата — возвращает как есть."""
+        import datetime
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            month_name = months_ru.get(value.month, str(value.month))
+            return f"{month_name} {value.year}"
+        return value
+
+    # Проходим по всем листам и ячейкам, конвертируем даты в текст
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value is not None:
+                    cell.value = _convert_date_to_text(cell.value)
+
     tmp_dir = tempfile.mkdtemp()
     tmp_file = os.path.join(tmp_dir, "temp_openpyxl.xlsx")
     try:
