@@ -277,7 +277,7 @@ async def handle_callback(callback: types.CallbackQuery, state: FSMContext):
         await client.delete_mapping(task_id, contractor)
         new_markup = remove_button(callback.message.reply_markup, contractor)
         await callback.message.edit_reply_markup(reply_markup=new_markup)
-        await callback.answer("Маппинг удалён")
+        await callback.answer("Маппинг удалён ")
 
     elif data == "edit_mapping_cancel":
         await callback.message.edit_reply_markup()
