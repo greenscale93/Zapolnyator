@@ -55,7 +55,7 @@ def get_template_offices(template_path: str) -> list:
 
     ws = wb["Отчетность БИТ 2026"]
     offices = set()
-    for row in range(13, 17):
+    for row in range(16, 33):
         val = ws.cell(row=row, column=3).value
         if val and str(val).strip():
             offices.add(str(val).strip())
