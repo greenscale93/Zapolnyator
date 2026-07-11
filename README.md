@@ -260,6 +260,7 @@ Zapolnyator/
 ├── data/                           # Монтируемая директория для файлов
 ├── docker-compose.yml
 ├── .env.example
+├── DEPLOYMENT.md                # Инструкция по диагностике на VPS
 └── README.md
 ```
 
