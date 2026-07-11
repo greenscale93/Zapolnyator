@@ -49,28 +49,17 @@ def preprocess_vzaimoraschety(
             "Для обработки Взаиморасчетов нужна колонка 'ПодразделениеКонтрагент'"
         )
 
-    # 1. Заполненные спецофисы (содержат ключевое слово) – разделяем по БДР/БДДС
+    # 1. Заполненные спецофисы (содержат ключевое слово) – только валидация
+    #    Замена на БДР/БДДС и префикс комментария делаются единым блоком
+    #    на шаге 3 (после всех мэппингов), чтобы учесть и строки,
+    #    получившие ключевое слово через office_mapping.
     mask_special_filled = df[office_col].astype(str).str.contains(keyword, na=False)
     if mask_special_filled.any():
-        df.loc[mask_special_filled, office_col] = (
-            df.loc[mask_special_filled, turnover_field].map(replace_rules)
-        )
-        still_na = df.loc[mask_special_filled, office_col].isna()
-        if still_na.any():
-            bad_vals = df.loc[mask_special_filled & still_na, turnover_field].unique()
+        missing_turnover = df.loc[mask_special_filled, turnover_field].isna()
+        if missing_turnover.any():
             raise ValueError(
-                f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}"
+                f"Для спецофиса не указан {turnover_field}"
             )
-
-        # Комментарий для спецофисов: префикс "<ПодразделениеКонтрагент>: "
-        sub_office_col = "ПодразделениеКонтрагент"
-        for idx in df[mask_special_filled].index:
-            office_name = str(df.loc[idx, sub_office_col]).strip() if pd.notna(df.loc[idx, sub_office_col]) else ""
-            orig_comment = str(df.loc[idx, "Комментарий"]).strip() if pd.notna(df.loc[idx, "Комментарий"]) else ""
-            if office_name:
-                df.loc[idx, "Комментарий"] = f"{office_name}: {orig_comment}" if orig_comment else office_name
-            else:
-                df.loc[idx, "Комментарий"] = orig_comment
 
     # 2. Пустые office_col – заполняем из словаря маппинга или заменой по ТипОборота
     mask_empty = df[office_col].isna() | (df[office_col].astype(str).str.strip() == "")
@@ -93,6 +82,39 @@ def preprocess_vzaimoraschety(
                 logger.warning(
                     f"Не найден маппинг для '{sub_str}', использован fallback {fallback}"
                 )
+
+    # ---- Замена ключевого слова на БДР/БДДС + префикс комментария ----
+    # Применяется ко ВСЕМ строкам, где office_col содержит ключевое слово,
+    # независимо от того, было оно изначально или пришло через мэппинг.
+    mask_keyword = df[office_col].astype(str).str.contains(keyword, na=False)
+    if mask_keyword.any():
+        df.loc[mask_keyword, office_col] = (
+            df.loc[mask_keyword, turnover_field].map(replace_rules)
+        )
+        still_na = df.loc[mask_keyword, office_col].isna()
+        if still_na.any():
+            bad_vals = df.loc[mask_keyword & still_na, turnover_field].unique()
+            raise ValueError(
+                f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}"
+            )
+
+        # Комментарий: префикс "<ПодразделениеКонтрагент>: "
+        sub_office_col = "ПодразделениеКонтрагент"
+        for idx in df[mask_keyword].index:
+            office_name = (
+                str(df.loc[idx, sub_office_col]).strip()
+                if pd.notna(df.loc[idx, sub_office_col]) else ""
+            )
+            orig_comment = (
+                str(df.loc[idx, "Комментарий"]).strip()
+                if pd.notna(df.loc[idx, "Комментарий"]) else ""
+            )
+            if office_name:
+                df.loc[idx, "Комментарий"] = (
+                    f"{office_name}: {orig_comment}" if orig_comment else office_name
+                )
+            else:
+                df.loc[idx, "Комментарий"] = orig_comment
 
     # 3. Схлопывание для обычных офисов (не содержащих keyword)
     is_special = df[office_col].astype(str).str.contains(keyword, na=False)
