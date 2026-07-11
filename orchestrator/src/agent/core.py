@@ -12,6 +12,18 @@ from src.agent.mapping_handler import MappingHandler
 logger = logging.getLogger(__name__)
 
 
+def _format_value(val, fmt: str = "amount") -> str:
+    """Форматирует число для вывода в Telegram по формату из rules.json."""
+    if val is None:
+        return "пусто"
+    if not isinstance(val, (int, float)):
+        return str(val)
+    if fmt == "integer":
+        return f"{round(val):,.0f}".replace(",", " ").replace(".", ",")
+    # amount (2 знака)
+    return f"{val:,.2f}".replace(",", " ").replace(".", ",")
+
+
 class OrchestratorAgent:
     def __init__(
         self,
@@ -215,7 +227,8 @@ class OrchestratorAgent:
                         )
                     else:
                         val = wr.get('value', 0)
-                        val_str = f"{val:,.2f}".replace(",", " ").replace(".", ",")
+                        fmt = wr.get('format', 'amount')
+                        val_str = _format_value(val, fmt)
                         msg = f"📊 {wr.get('label', wr.get('key', '?'))}: {val_str}"
                         if diagnostic:
                             msg += f" ({wr.get('cell', '?')})"
@@ -225,14 +238,6 @@ class OrchestratorAgent:
                 await self.notifier.send_message(
                     f"⚠️ Ошибка записи значений: {str(e)}", user_id=user_id
                 )
-
-        # ---- Пересчёт формул в Excel (LibreOffice) ----
-        if output_path:
-            try:
-                await self.worker_client.recalculate_excel(output_path)
-                logger.info(f"Formulas recalculated: {output_path}")
-            except Exception as e:
-                logger.warning(f"Recalculate failed (non-critical): {e}")
 
         # ---- Read Values (из rules.json) ----
         message_parts = []
@@ -254,12 +259,8 @@ class OrchestratorAgent:
                     else:
                         val = rr.get("value")
                         cell = rr.get("cell", "?")
-                        if val is None:
-                            val_str = "пусто"
-                        elif isinstance(val, (int, float)):
-                            val_str = f"{val:,.2f}".replace(",", " ").replace(".", ",")
-                        else:
-                            val_str = str(val)
+                        fmt = rr.get("format", "amount")
+                        val_str = _format_value(val, fmt)
 
                         # Эмодзи по ключу
                         emoji_map = {

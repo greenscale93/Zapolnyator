@@ -140,7 +140,7 @@ async def _write_ffot(
     await _save_and_fix_formats(wb, template_path)
 
     logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
-    return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", "")}
+    return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", ""), "format": config.get("format", "amount")}
 
 
 def _calculate_ffot_sum(
@@ -264,7 +264,8 @@ def read_value_from_template(
         "key": config.get("key"),
         "label": config.get("label", ""),
         "value": value,
-        "cell": cell_ref
+        "cell": cell_ref,
+        "format": config.get("format", "amount")
     }
 
 
