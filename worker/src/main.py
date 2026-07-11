@@ -56,7 +56,7 @@ async def call_tool(request: ToolRequest):
             file_path = request.arguments["file_path"]
             sheet_name = request.arguments.get("sheet_name")
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
+                df = pd.read_excel(file_path, sheet_name=sheet_name, header=0, engine='calamine')
                 df = df.where(pd.notnull(df), None)
                 data = df.to_dict(orient='records')
                 columns = df.columns.tolist()
