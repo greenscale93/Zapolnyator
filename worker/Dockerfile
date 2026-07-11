@@ -1,12 +1,20 @@
 FROM python:3.11-slim
 WORKDIR /app
 
-# Установка LibreOffice для пересчёта формул Excel
+# LibreOffice + UNO Python bridge
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-calc \
+    && apt-get install -y --no-install-recommends \
+        libreoffice-calc \
+        libreoffice-script-provider-python \
     && rm -rf /var/lib/apt/lists/*
+
+# Копируем startup-скрипт
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+ENV PYTHONPATH="/usr/lib/libreoffice/program:${PYTHONPATH}"
+ENTRYPOINT ["/entrypoint.sh"]

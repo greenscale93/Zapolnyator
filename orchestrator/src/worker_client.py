@@ -69,11 +69,3 @@ class WorkerClient:
         if resp.get("status") == "success":
             return resp["result"].get("results", [])
         raise Exception(resp.get("error_message", "Unknown error"))
-
-    async def recalculate_excel(self, file_path: str) -> dict:
-        resp = await self.call_tool("recalculate_excel", {
-            "file_path": file_path
-        })
-        if resp.get("status") == "success":
-            return resp["result"]
-        raise Exception(resp.get("error_message", "Recalculation failed"))

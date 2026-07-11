@@ -15,7 +15,7 @@ def get_empty_vz_contractors(source_path: str) -> list:
     у которых в строках Взаиморасчет (Доход/Расход) пустое поле
     ПодразделениеКонтрагентДляОтчета.
     """
-    df = pd.read_excel(source_path, header=0)
+    df = pd.read_excel(source_path, header=0, engine='calamine')
     # Фильтр: только строки Взаиморасчет и направления Доход/Расход
     mask = (
         df["ТипЗаписи"].astype(str) == "Взаиморасчет"

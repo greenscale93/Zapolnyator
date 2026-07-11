@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
-from src.excel_processor import read_excel_structure, apply_sheet_mapping, recalculate_excel
+from src.excel_processor import read_excel_structure, apply_sheet_mapping
 from src.vz_utils import get_empty_vz_contractors
 from src.template_reader import get_template_offices
 from src.ffot_writer import process_write_values, process_read_values
@@ -182,15 +182,6 @@ async def call_tool(request: ToolRequest):
                 return ToolResponse(status="success", result={"results": results})
             except Exception as e:
                 logger.exception("read_template_values error")
-                return ToolResponse(status="error", error_message=str(e))
-
-        elif request.tool == "recalculate_excel":
-            file_path = request.arguments["file_path"]
-            try:
-                result = await recalculate_excel(file_path)
-                return ToolResponse(status=result["status"], result=result, error_message=result.get("error_message"))
-            except Exception as e:
-                logger.exception("recalculate_excel error")
                 return ToolResponse(status="error", error_message=str(e))
                     
         else:

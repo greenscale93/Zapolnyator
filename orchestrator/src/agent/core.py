@@ -223,14 +223,6 @@ class OrchestratorAgent:
                     f"⚠️ Ошибка записи значений: {str(e)}", user_id=user_id
                 )
 
-        # ---- Пересчёт формул в Excel (LibreOffice) ----
-        if output_path:
-            try:
-                await self.worker_client.recalculate_excel(output_path)
-                logger.info(f"Formulas recalculated: {output_path}")
-            except Exception as e:
-                logger.warning(f"Recalculate failed (non-critical): {e}")
-
         # ---- Read Values (из rules.json) ----
         message_parts = []
         read_values = self.rules.get("read_values", [])
