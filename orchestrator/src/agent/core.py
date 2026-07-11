@@ -240,12 +240,16 @@ class OrchestratorAgent:
                             f"⚠️ {rr.get('label', rr.get('key', '?'))}: ошибка"
                         )
                     else:
-                        val = rr.get("value", "")
-                        # Форматируем число, если это число
-                        if isinstance(val, (int, float)):
-                            val = f"{val:,.2f}"
+                        val = rr.get("value")
+                        # Форматируем число или показываем "пусто"
+                        if val is None:
+                            val_str = "пусто"
+                        elif isinstance(val, (int, float)):
+                            val_str = f"{val:,.2f}"
+                        else:
+                            val_str = str(val)
                         message_parts.append(
-                            f"📊 {rr.get('label', rr.get('key', '?'))}: {val}"
+                            f"📊 {rr.get('label', rr.get('key', '?'))}: {val_str}"
                         )
                 if message_parts:
                     await self.notifier.send_message(

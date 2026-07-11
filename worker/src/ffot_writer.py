@@ -148,10 +148,10 @@ def _calculate_ffot_sum(
 ) -> float:
     """
     Читает исходный файл, фильтрует ФактическийФОТ,
-    суммирует Оклад+Премия с исключениями.
+    суммирует колонку Сумма с исключениями.
 
     exclude_employee = {"Сорокин Илья Вячеславович": ["Премия"]}
-    означает: для указанного сотрудника не учитывать Премию.
+    означает: для указанного сотрудника исключить строки с указанным видом начисления.
     """
     df = pd.read_excel(source_path, header=0)
     logger.info(f"FFOT: загружено {len(df)} строк, колонки: {list(df.columns)}")
@@ -171,14 +171,10 @@ def _calculate_ffot_sum(
         logger.warning("Нет строк с ТипЗаписи='ФактическийФОТ'")
         return 0.0
 
-    # Колонки Оклад / Премия / Сумма / Сотрудник / ВидНачисления
-    oklad_col = premia_col = amount_col = emp_col = payroll_col = None
+    # Колонки: Сумма, Сотрудник, ВидНачисления
+    amount_col = emp_col = payroll_col = None
     for col in df_ffot.columns:
         c = col.lower().strip()
-        if oklad_col is None and c in ("оклад", "salary"):
-            oklad_col = col
-        if premia_col is None and c in ("премия", "bonus"):
-            premia_col = col
         if amount_col is None and c in ("сумма", "amount"):
             amount_col = col
         if emp_col is None and c in ("сотрудник", "employee", "фио"):
@@ -186,34 +182,30 @@ def _calculate_ffot_sum(
         if payroll_col is None and c in ("видначислениязп", "payrolltype"):
             payroll_col = col
 
+    if not amount_col:
+        raise ValueError("Не найдена колонка 'Сумма' в исходных данных")
+
     total = 0.0
 
-    # Суммируем пострчно с учётом исключений
+    # Суммируем построчно с учётом исключений
     for _, row in df_ffot.iterrows():
         employee = str(row.get(emp_col, "")).strip() if emp_col else ""
         payroll_type = str(row.get(payroll_col, "")).strip() if payroll_col else ""
 
-        # Проверяем исключения
+        # Проверяем исключения: для Сорокина не суммируем Премию
         skip_row = False
         if exclude_employee and employee in exclude_employee:
             excluded_types = exclude_employee[employee]
             if payroll_type in excluded_types:
                 logger.info(
-                    f"FFOT: исключена Премия для {employee} ({payroll_type})"
+                    f"FFOT: исключена строка для {employee} ({payroll_type})"
                 )
                 skip_row = True
 
         if not skip_row:
-            if oklad_col:
-                total += _clean_numeric(row.get(oklad_col, 0))
-            if premia_col:
-                total += _clean_numeric(row.get(premia_col, 0))
+            total += _clean_numeric(row.get(amount_col, 0))
 
-    # Fallback: если Оклад/Премия не найдены — используем Сумма
-    if total == 0.0 and amount_col:
-        total = df_ffot[amount_col].apply(_clean_numeric).sum()
-
-    logger.info(f"FFOT: итог = {total}")
+    logger.info(f"FFOT: итог (по колонке Сумма) = {total}")
     return total
 
 
