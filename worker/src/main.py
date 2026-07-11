@@ -8,10 +8,8 @@ from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import read_excel_structure, apply_sheet_mapping
-import openpyxl
-import tempfile
-import zipfile
-import msoffcrypto
+from src.vz_utils import get_empty_vz_contractors
+from src.template_reader import get_template_offices
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,13 +95,7 @@ async def call_tool(request: ToolRequest):
             if not os.path.exists(source_path):
                 return ToolResponse(status="error", error_message=f"Source file not found: {source_path}")
             try:
-                df = pd.read_excel(source_path, header=0)
-                # Фильтр: только строки Взаиморасчет и направления Доход/Расход
-                mask = (df["ТипЗаписи"].astype(str) == "Взаиморасчет") & (df["Направление"].astype(str).isin(["Доход", "Расход"]))
-                df_vz = df[mask]
-                # Пустые ПодразделениеКонтрагентДляОтчета
-                empty_mask = df_vz["ПодразделениеКонтрагентДляОтчета"].isna() | (df_vz["ПодразделениеКонтрагентДляОтчета"].astype(str).str.strip() == "")
-                contractors = df_vz.loc[empty_mask, "ПодразделениеКонтрагент"].dropna().unique().tolist()
+                contractors = get_empty_vz_contractors(source_path)
                 return ToolResponse(status="success", result={"contractors": contractors})
             except Exception as e:
                 logger.exception("read_vz_empty_contractors error")
@@ -114,47 +106,8 @@ async def call_tool(request: ToolRequest):
             if not os.path.exists(template_path):
                 return ToolResponse(status="error", error_message=f"Template file not found: {template_path}")
             try:
-                # Пытаемся открыть с расшифровкой, если файл зашифрован
-                wb = None
-                try:
-                    # Сначала обычное открытие
-                    wb = openpyxl.load_workbook(template_path, data_only=True)
-                except zipfile.BadZipFile:
-                    # Возможно файл зашифрован, пробуем расшифровать паролем "987456"
-                    try:
-                        with open(template_path, 'rb') as f:
-                            file = msoffcrypto.OfficeFile(f)
-                            if file.is_encrypted():
-                                file.load_key(password="987456")
-                                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-                                    file.decrypt(tmp)
-                                    tmp_path = tmp.name
-                                wb = openpyxl.load_workbook(tmp_path, data_only=True)
-                                os.unlink(tmp_path)
-                            else:
-                                raise  # если не зашифрован, перехватим ниже
-                    except:
-                        raise ValueError("Не удалось прочитать шаблон (возможно, повреждён или неверный пароль)")
-
-                if wb is None:
-                    return ToolResponse(status="error", error_message="Не удалось открыть файл шаблона")
-
-                if "Отчетность БИТ 2026" not in wb.sheetnames:
-                    wb.close()
-                    return ToolResponse(status="error", error_message="Лист 'Отчетность БИТ 2026' не найден в шаблоне")
-
-                ws = wb["Отчетность БИТ 2026"]
-                offices = set()
-                for row in range(13, 17):
-                    val = ws.cell(row=row, column=3).value
-                    if val and str(val).strip():
-                        offices.add(str(val).strip())
-                for row in range(34, 36):
-                    val = ws.cell(row=row, column=3).value
-                    if val and str(val).strip():
-                        offices.add(str(val).strip())
-                wb.close()
-                return ToolResponse(status="success", result={"offices": sorted(list(offices))})
+                offices = get_template_offices(template_path)
+                return ToolResponse(status="success", result={"offices": offices})
             except Exception as e:
                 logger.exception("read_template_offices error")
                 return ToolResponse(status="error", error_message=str(e))

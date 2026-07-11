@@ -1,11 +1,11 @@
 import uuid
 import asyncio
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
 from src.worker_client import WorkerClient
 from src.agent import OrchestratorAgent
+from src.api_models import CreateTaskRequest, AnswerRequest, EditMappingRequest, DeleteMappingRequest
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,22 +15,6 @@ session_manager = SessionManager()
 memory_store = MemoryStore()
 worker_client = WorkerClient()
 agent = OrchestratorAgent(session_manager, memory_store, worker_client)
-
-class CreateTaskRequest(BaseModel):
-    user_id: int
-    files: dict
-    month: str = "Май"
-    year: int = 2026
-
-class AnswerRequest(BaseModel):
-    answer: str
-
-class EditMappingRequest(BaseModel):
-    user_id: int
-
-class DeleteMappingRequest(BaseModel):
-    task_id: str
-    contractor: str
 
 @router.post("/api/v1/task")
 async def create_task(request: CreateTaskRequest):
