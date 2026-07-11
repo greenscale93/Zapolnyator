@@ -254,7 +254,7 @@ class OrchestratorAgent:
                         if val is None:
                             val_str = "пусто"
                         elif isinstance(val, (int, float)):
-                            val_str = f"{val:,.2f}"
+                            val_str = f"{val:,.2f}".replace(",", " ").replace(".", ",")
                         else:
                             val_str = str(val)
 
