@@ -2,6 +2,7 @@ import os
 import shutil
 import logging
 import tempfile
+import subprocess
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -11,6 +12,61 @@ import re
 from src.vz_processing import preprocess_vzaimoraschety
 
 logger = logging.getLogger(__name__)
+
+# ========== ПЕРЕСЧЁТ ФОРМУЛ ==========
+
+
+async def recalculate_excel(file_path: str) -> dict:
+    """
+    Пересчитывает все формулы в Excel-файле через LibreOffice headless.
+
+    Копирует файл во временную директорию, открывает в LibreOffice Calc,
+    сохраняет (формулы пересчитываются) и заменяет оригинал результатом.
+    """
+    if not os.path.exists(file_path):
+        return {"status": "error", "error_message": f"File not found: {file_path}"}
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        result = subprocess.run(
+            [
+                "libreoffice", "--headless", "--calc",
+                "--infilter=Microsoft Excel 2007-365",
+                "--outdir", tmp_dir, file_path
+            ],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            logger.error(f"LibreOffice error: {result.stderr}")
+            return {
+                "status": "error",
+                "error_message": f"LibreOffice failed: {result.stderr[:200]}"
+            }
+
+        # LibreOffice создаёт копию файла во временной директории
+        result_file = os.path.join(tmp_dir, os.path.basename(file_path))
+        if not os.path.exists(result_file):
+            return {
+                "status": "error",
+                "error_message": "LibreOffice did not produce output file"
+            }
+
+        # Заменяем оригинал пересчитанной версией
+        shutil.move(result_file, file_path)
+        logger.info(f"Formulas recalculated: {file_path}")
+        return {"status": "success", "recalculated": True}
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice recalculate timed out")
+        return {"status": "error", "error_message": "Recalculation timed out (30s)"}
+    finally:
+        # Очистка временной директории
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 

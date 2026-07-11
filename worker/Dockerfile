@@ -1,5 +1,11 @@
 FROM python:3.11-slim
 WORKDIR /app
+
+# Установка LibreOffice для пересчёта формул Excel
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
