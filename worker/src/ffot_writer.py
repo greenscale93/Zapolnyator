@@ -100,17 +100,11 @@ async def _write_ffot(
     if row_num is None:
         raise ValueError(f"Не найдена строка '{config.get('row_name')}'")
 
-    # 3. Запись через LibreOffice
-    if lo_client is None:
-        raise RuntimeError("LibreOffice UNO not available")
-
-    col_letter = chr(64 + col_idx) if col_idx <= 26 else f"col{col_idx}"
-    cell_ref = f"{col_letter}{row_num}"
-
+    # 3. Запись через LoClient
     doc = await lo_client.open_document(template_path)
     try:
-        sheet = await lo_client.get_sheet(doc, "Отчетность БИТ 2026")
-        await lo_client.write_cell(sheet, col_idx - 1, row_num - 1, ffot_value)
+        ws = await lo_client.get_sheet(doc, "Отчетность БИТ 2026")
+        await lo_client.write_cell(ws, col_idx - 1, row_num - 1, ffot_value)
         await lo_client.save_document(doc, template_path)
         logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
     finally:

@@ -256,13 +256,10 @@ async def apply_sheet_mapping(
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # ======== ВСТАВКА ЧЕРЕЗ LIBREOFFICE ========
-        if lo_client is None:
-            return {"status": "error", "error_message": "LibreOffice UNO not available"}
-
-        doc = await lo_client.open_document(output_path, password=None)
+        # ======== ВСТАВКА ЧЕРЕЗ LO_CLIENT ========
+        doc = await lo_client.open_document(output_path)
         try:
-            sheet = await lo_client.get_sheet(doc, sheet_name)
+            ws = await lo_client.get_sheet(doc, sheet_name)
             header_row = mapping.get("header_row", 2)
 
             # Конвертируем target_col_idx из 1-based в 0-based
@@ -274,12 +271,11 @@ async def apply_sheet_mapping(
                 rows_0based.append(r)
 
             # Находим последнюю строку и добавляем после неё
-            start_row = await lo_client.find_last_row(sheet)
+            start_row = await lo_client.find_last_row(ws)
             if start_row < header_row:
                 start_row = header_row
 
-            start_row = start_row + 1  # строка ПОСЛЕ последней заполненной
-            await lo_client.append_rows(sheet, rows_0based, start_row=start_row)
+            await lo_client.append_rows(ws, rows_0based, start_row=start_row)
 
             await lo_client.save_document(doc, output_path)
             logger.info(f"File saved via LibreOffice: {output_path}")

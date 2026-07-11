@@ -1,199 +1,154 @@
 """
-LibreOffice UNO API client.
+Клиент для работы с Excel: запись через openpyxl + фикс форматов через LibreOffice.
 
-Управляет соединением с фоновым soffice и предоставляет методы
-для чтения/записи Excel-файлов без openpyxl.
+openpyxl используется ТОЛЬКО для записи данных (append rows, write cell).
+После каждой записи файл конвертируется через LibreOffice --convert-to,
+чтобы форматы дат и формулы не повреждались.
 
-Все операции потокобезопасны через asyncio Lock.
+Чтение — через python-calamine (template_reader.py).
+
+Почему не UNO: импорт `uno` в Docker с python:3.11-slim нестабилен
+(требует точного совпадения версий LibreOffice и системного Python).
+Данный гибридный подход — самый надёжный.
 """
 import os
+import shutil
 import logging
+import tempfile
+import subprocess
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+import openpyxl
+import msoffcrypto
 
 logger = logging.getLogger(__name__)
 
-_uno = None
-_uno_available = False
-
-try:
-    import uno
-    from com.sun.star.beans import PropertyValue
-    _uno_available = True
-except ImportError:
-    logger.warning("UNO not available — LibreOffice operations will fail")
-
 
 class LoClient:
-    """Обёртка над LibreOffice UNO API для операций с Excel."""
+    """Запись Excel через openpyxl + LibreOffice конвертация."""
 
     def __init__(self):
         self._lock = asyncio.Lock()
-        self._desktop = None
-        self._connected = False
-        if _uno_available:
-            self._connect()
-
-    def _connect(self):
-        """Подключается к фоновому soffice."""
-        try:
-            local_context = uno.getComponentContext()
-            resolver = local_context.ServiceManager.createInstanceWithContext(
-                "com.sun.star.bridge.UnoUrlResolver", local_context
-            )
-            ctx = resolver.resolve(
-                "uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext"
-            )
-            self._desktop = ctx.ServiceManager.createInstanceWithContext(
-                "com.sun.star.frame.Desktop", ctx
-            )
-            self._connected = True
-            logger.info("LibreOffice UNO connected")
-        except Exception as e:
-            logger.error(f"LibreOffice UNO connection failed: {e}")
-            self._connected = False
-
-    def _ensure_connected(self):
-        if not _uno_available or not self._connected:
-            raise RuntimeError("LibreOffice UNO not available")
-
-    def _to_uno_url(self, path: str) -> str:
-        """Конвертирует путь файла в UNO URL."""
-        return uno.systemPathToFileUrl(os.path.abspath(path))
+        logger.info("LoClient initialized (openpyxl + LibreOffice mode)")
 
     async def open_document(self, path: str, password: str = None):
-        """
-        Открывает Excel-файл на запись через LibreOffice.
-        При необходимости расшифровывает (msoffcrypto) и открывает decrypted копию.
-        """
+        """Открывает Excel-файл через openpyxl."""
+        file_path = path
+        tmp = None
+        if password:
+            try:
+                with open(path, 'rb') as f:
+                    office_file = msoffcrypto.OfficeFile(f)
+                    if office_file.is_encrypted():
+                        office_file.load_key(password=password)
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                        office_file.decrypt(tmp)
+                        tmp.close()
+                        file_path = tmp.name
+                        logger.info(f"Decrypted: {file_path}")
+            except Exception as e:
+                logger.warning(f"Decrypt failed: {e}")
+
         async with self._lock:
-            self._ensure_connected()
-
-            # Если файл зашифрован — сначала расшифровываем через msoffcrypto
-            file_path = path
-            tmp = None
-            if password:
-                try:
-                    import msoffcrypto
-                    import tempfile
-                    with open(path, 'rb') as f:
-                        office_file = msoffcrypto.OfficeFile(f)
-                        if office_file.is_encrypted():
-                            office_file.load_key(password=password)
-                            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-                            office_file.decrypt(tmp)
-                            tmp.close()
-                            file_path = tmp.name
-                            logger.info(f"Decrypted template: {file_path}")
-                except Exception as e:
-                    logger.warning(f"Decrypt failed (will try as-is): {e}")
-
-            url = self._to_uno_url(file_path)
-            doc = self._desktop.loadComponentFromURL(url, "_blank", 0, ())
-
+            wb = openpyxl.load_workbook(file_path)
             if tmp and file_path != path:
                 try:
                     os.unlink(file_path)
                 except Exception:
                     pass
+            return wb
 
-            logger.info(f"Opened document: {path}")
-            return doc
-
-    async def get_sheet(self, doc, sheet_name: str):
-        """Возвращает лист по имени."""
-        sheets = doc.getSheets()
-        if not sheets.hasByName(sheet_name):
+    async def get_sheet(self, wb, sheet_name: str):
+        if sheet_name not in wb.sheetnames:
             raise ValueError(f"Sheet '{sheet_name}' not found")
-        return sheets.getByName(sheet_name)
+        return wb[sheet_name]
 
-    async def write_cell(self, sheet, col: int, row: int, value):
-        """
-        Записывает значение в ячейку (col, row — 0-based).
-        Числа записываются как float, остальное — как строка.
-        """
+    async def write_cell(self, ws, col: int, row: int, value):
+        """Записывает значение в ячейку (col, row — 0-based)."""
         async with self._lock:
-            cell = sheet.getCellByPosition(col, row)
+            cell = ws.cell(row=row + 1, column=col + 1)
             if value is None:
                 return
             if isinstance(value, (int, float)):
-                cell.setValue(float(value))
+                cell.value = float(value)
             else:
-                # Период и другие текстовые значения — как строка
-                cell.setString(str(value))
+                cell.value = str(value)
 
-    async def find_last_row(self, sheet, max_column: int = 30) -> int:
+    async def find_last_row(self, ws, max_column: int = 30) -> int:
         """Находит последнюю использованную строку (0-based)."""
-        async with self._lock:
-            last = 0
-            for row in range(1000):  # разумный лимит
-                has_data = False
-                for col in range(max_column):
-                    cell = sheet.getCellByPosition(col, row)
-                    if cell.getString() or cell.getValue() != 0.0:
-                        has_data = True
-                        break
-                if has_data:
-                    last = row
-                elif last > 0 and row > last + 5:
-                    break  # 5 пустых строк подряд — конец
-            return last
+        last = 0
+        for row_idx in range(1, ws.max_row + 1):
+            has_data = False
+            for col_idx in range(1, max_column + 1):
+                if ws.cell(row=row_idx, column=col_idx).value is not None:
+                    has_data = True
+                    break
+            if has_data:
+                last = row_idx - 1  # 0-based
+            elif last > 0 and row_idx > last + 6:
+                break
+        return last
 
     async def append_rows(
         self,
-        sheet,
+        ws,
         data: List[Dict[int, Any]],
         start_row: Optional[int] = None,
         header_row: int = 1
     ):
-        """
-        Добавляет строки данных на лист.
-        data — список словарей {col_idx: value} (0-based col_idx).
-        Если start_row не указан — находит последнюю строку и добавляет после неё.
-        """
+        """Добавляет строки на лист (col в data — 0-based)."""
         async with self._lock:
             if start_row is None:
-                start_row = await self.find_last_row(sheet) + 1
-
-            if start_row <= header_row:
-                start_row = header_row + 1
+                start_row = await self.find_last_row(ws) + 1
+            if start_row < header_row:
+                start_row = header_row
 
             for i, row_data in enumerate(data):
-                r = start_row + i
+                r = start_row + i + 1  # 1-based for openpyxl
                 for col_idx, value in row_data.items():
-                    await self.write_cell(sheet, col_idx, r, value)
-
-            logger.info(f"Appended {len(data)} rows starting at row {start_row}")
+                    c = col_idx + 1  # 1-based for openpyxl
+                    if value is not None:
+                        ws.cell(row=r, column=c).value = value
+            logger.info(f"Appended {len(data)} rows starting at row {start_row + 1}")
             return start_row
 
-    async def save_document(self, doc, path: str):
-        """Сохраняет документ в XLSX формате."""
-        async with self._lock:
-            props = (
-                PropertyValue("FilterName", 0, "Calc MS Excel 2007 XML", 0),
-            )
-            url = self._to_uno_url(path)
-            doc.storeToURL(url, props)
-            logger.info(f"Saved: {path}")
+    async def save_document(self, wb, path: str):
+        """Сохраняет через LibreOffice --convert-to для фикса форматов."""
+        tmp_dir = tempfile.mkdtemp()
+        tmp_file = os.path.join(tmp_dir, "temp.xlsx")
+        try:
+            async with self._lock:
+                wb.save(tmp_file)
 
-    async def close_document(self, doc):
-        """Закрывает документ без сохранения."""
-        async with self._lock:
+            result = subprocess.run(
+                [
+                    "libreoffice", "--headless",
+                    "--convert-to", "xlsx:Calc MS Excel 2007 XML",
+                    "--outdir", tmp_dir, tmp_file
+                ],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"LibreOffice failed: {result.stderr[:200]}")
+
+            converted = os.path.join(tmp_dir, "temp.xlsx")
+            if not os.path.exists(converted):
+                raise RuntimeError("LibreOffice did not produce output")
+            shutil.move(converted, path)
+            logger.info(f"Saved with format fix: {path}")
+        finally:
             try:
-                doc.close(True)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             except Exception:
                 pass
 
-    async def close(self):
-        """Закрывает соединение."""
-        async with self._lock:
-            if self._desktop:
-                try:
-                    self._desktop.terminate()
-                except Exception:
-                    pass
-            self._connected = False
+    async def close_document(self, wb):
+        try:
+            wb.close()
+        except Exception:
+            pass
 
 
-# Глобальный singleton
-lo_client = LoClient() if _uno_available else None
+lo_client = LoClient()
+
