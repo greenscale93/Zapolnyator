@@ -62,10 +62,7 @@ def preprocess_vzaimoraschety(
                 f"Для спецофиса не задана замена для {turnover_field}: {list(bad_vals)}"
             )
 
-        # Для спецофисов: Подразделение = то же, что office_col (БДР/БДДС)
-        df.loc[mask_special_filled, "Подразделение"] = df.loc[mask_special_filled, office_col]
-
-        # Комментарий: добавляем префикс "<ПодразделениеКонтрагент>: "
+        # Комментарий для спецофисов: префикс "<ПодразделениеКонтрагент>: "
         sub_office_col = "ПодразделениеКонтрагент"
         for idx in df[mask_special_filled].index:
             office_name = str(df.loc[idx, sub_office_col]).strip() if pd.notna(df.loc[idx, sub_office_col]) else ""
