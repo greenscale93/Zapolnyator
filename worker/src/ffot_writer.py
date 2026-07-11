@@ -135,8 +135,9 @@ async def _write_ffot(
     # 5. Запись
     cell_ref = f"{get_column_letter(col_idx)}{row_num}"
     ws.cell(row=row_num, column=col_idx).value = ffot_value
-    wb.save(template_path)
-    wb.close()
+
+    from src.excel_processor import _save_and_fix_formats
+    await _save_and_fix_formats(wb, template_path)
 
     logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
     return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", "")}

@@ -16,6 +16,49 @@ logger = logging.getLogger(__name__)
 # ========== ПЕРЕСЧЁТ ФОРМУЛ ==========
 
 
+async def _save_and_fix_formats(wb, output_path: str) -> None:
+    """
+    Сохраняет workbook через LibreOffice, чтобы не повредить форматы дат и формулы.
+
+    openpyxl при wb.save() может испортить форматы ячеек (особенно даты).
+    Поэтому: сохраняем openpyxl'ом во временный файл → конвертируем через
+    LibreOffice в правильный XLSX → заменяем оригинал.
+    """
+    tmp_dir = tempfile.mkdtemp()
+    tmp_file = os.path.join(tmp_dir, "temp_openpyxl.xlsx")
+    try:
+        # 1. Сохраняем openpyxl'ом во временный файл
+        wb.save(tmp_file)
+        wb.close()
+
+        # 2. Конвертируем через LibreOffice чтобы исправить форматы
+        result = subprocess.run(
+            [
+                "libreoffice", "--headless",
+                "--convert-to", "xlsx:Calc MS Excel 2007 XML",
+                "--outdir", tmp_dir, tmp_file
+            ],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"LibreOffice conversion failed: {result.stderr[:200]}")
+
+        # LibreOffice создаёт файл с тем же именем в --outdir
+        converted = os.path.join(tmp_dir, "temp_openpyxl.xlsx")
+        if not os.path.exists(converted):
+            raise RuntimeError("LibreOffice did not produce output file")
+
+        shutil.move(converted, output_path)
+        logger.info(f"File saved with format fix: {output_path}")
+
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 async def recalculate_excel(file_path: str) -> dict:
     """
     Пересчитывает все формулы в Excel-файле через LibreOffice headless.
@@ -333,7 +376,7 @@ async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: 
                 if value is not None:
                     ws.cell(row=i, column=col_idx).value = value
 
-        wb.save(output_path)
+        await _save_and_fix_formats(wb, output_path)
         logger.info(f"File saved: {output_path}")
 
         return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
