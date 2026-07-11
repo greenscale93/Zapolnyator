@@ -122,9 +122,18 @@ def preprocess_vzaimoraschety(
     df_regular = df[~is_special].copy()
 
     if not df_regular.empty:
+        # Найти колонку документа — по ней каждая запись уникальна
+        doc_col = None
+        for candidate in ['Документ', 'НомерК7', 'Номер']:
+            if candidate in df_regular.columns:
+                doc_col = candidate
+                break
+
         group_keys = [
             "Подразделение", "Контрагент", "Проект", office_col, "Направление"
         ]
+        if doc_col:
+            group_keys.append(doc_col)
         # Схлопывание БДР/БДДС: дубль с одинаковой суммой — берём .first()
         # (каждый уникальный документ даёт одну строку)
         df_regular = df_regular.groupby(group_keys, as_index=False).first()
