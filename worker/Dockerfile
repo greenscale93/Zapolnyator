@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 
-# LibreOffice для пересчёта формул и фикса форматов
+# Установка LibreOffice для пересчёта формул Excel
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libreoffice-calc \
     && rm -rf /var/lib/apt/lists/*

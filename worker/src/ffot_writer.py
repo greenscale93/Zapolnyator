@@ -2,19 +2,19 @@
 Запись/чтение значений в шаблон отчёта по конфигурации из rules.json.
 
 Поддерживает:
-- write_values (тип ffot) — расчёт + запись в ячейку (через LibreOffice UNO)
-- read_values — чтение значения из ячейки (через calamine)
+- write_values (тип ffot) — расчёт + запись в ячейку
+- read_values — чтение значения из ячейки
 """
 import logging
 import re
 import pandas as pd
+import openpyxl
+from openpyxl.utils import get_column_letter
 from typing import Optional, List
 
 from src.template_reader import (
-    find_row_by_name, find_month_column, read_cell_at, open_workbook_and_sheet,
-    _open_sheet
+    find_row_by_name, find_month_column, read_cell_at, open_workbook_and_sheet
 )
-from src.lo_client import lo_client
 
 logger = logging.getLogger(__name__)
 
@@ -82,37 +82,64 @@ async def _write_ffot(
     year: int
 ) -> dict:
     """
-    Обрабатывает write_value типа 'ffot' через LibreOffice UNO.
+    Обрабатывает write_value типа 'ffot':
+    - читает source, фильтрует ФактическийФОТ
+    - суммирует Оклад+Премия с учётом исключений
+    - находит целевую ячейку по config
+    - записывает значение
     """
     # 1. Расчёт суммы
     exclude_emp = config.get("exclude_employee", {})
     ffot_value = _calculate_ffot_sum(source_path, exclude_employee=exclude_emp)
 
-    # 2. Читаем позиции через calamine
-    data = _open_sheet(template_path, "Отчетность БИТ 2026")
-
-    target_month = get_target_month_name(month, config.get("month_offset", -1))
-    col_idx = find_month_column(data, target_month, config.get("month_row", 2))
-    if col_idx is None:
-        raise ValueError(f"Не найден месяц '{target_month}'")
-
-    row_num = find_row_by_name(data, config.get("row_column", 3), config.get("row_name", ""))
-    if row_num is None:
-        raise ValueError(f"Не найдена строка '{config.get('row_name')}'")
-
-    # 3. Запись через LoClient
-    col_letter = chr(64 + col_idx) if col_idx <= 26 else f"col{col_idx}"
-    cell_ref = f"{col_letter}{row_num}"
-
-    doc = await lo_client.open_document(template_path)
+    # 2. Открываем шаблон (без data_only, чтобы не потерять формулы)
     try:
-        ws = await lo_client.get_sheet(doc, "Отчетность БИТ 2026")
-        await lo_client.write_cell(ws, col_idx - 1, row_num - 1, ffot_value)
-        await lo_client.save_document(doc, template_path)
-        logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
-    finally:
-        await lo_client.close_document(doc)
+        wb = openpyxl.load_workbook(template_path)
+    except Exception:
+        import tempfile
+        import msoffcrypto
+        with open(template_path, 'rb') as f:
+            file = msoffcrypto.OfficeFile(f)
+            if file.is_encrypted():
+                file.load_key(password="987456")
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                    file.decrypt(tmp)
+                    tmp_path = tmp.name
+                wb = openpyxl.load_workbook(tmp_path)
+                os.unlink(tmp_path)
+            else:
+                raise
 
+    ws = wb["Отчетность БИТ 2026"]
+
+    # 3. Целевая колонка
+    target_month = get_target_month_name(month, config.get("month_offset", -1))
+    col_idx = find_month_column(
+        ws, target_month, config.get("month_row", 2)
+    )
+    if col_idx is None:
+        wb.close()
+        raise ValueError(f"Не найден месяц '{target_month}' в строке {config.get('month_row', 2)}")
+
+    # 4. Целевая строка
+    row_num = find_row_by_name(
+        ws, config.get("row_column", 3), config.get("row_name", "")
+    )
+    if row_num is None:
+        wb.close()
+        raise ValueError(
+            f"Не найдена строка '{config.get('row_name')}' "
+            f"в колонке {get_column_letter(config.get('row_column', 3))}"
+        )
+
+    # 5. Запись
+    cell_ref = f"{get_column_letter(col_idx)}{row_num}"
+    ws.cell(row=row_num, column=col_idx).value = ffot_value
+
+    from src.excel_processor import _save_and_fix_formats
+    await _save_and_fix_formats(wb, template_path)
+
+    logger.info(f"Записано {config.get('key')}: {ffot_value} в {cell_ref}")
     return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", "")}
 
 
@@ -127,7 +154,7 @@ def _calculate_ffot_sum(
     exclude_employee = {"Сорокин Илья Вячеславович": ["Премия"]}
     означает: для указанного сотрудника исключить строки с указанным видом начисления.
     """
-    df = pd.read_excel(source_path, header=0, engine='calamine')
+    df = pd.read_excel(source_path, header=0)
     logger.info(f"FFOT: загружено {len(df)} строк, колонки: {list(df.columns)}")
 
     # Колонка типа записи
@@ -194,29 +221,43 @@ def read_value_from_template(
 ) -> dict:
     """
     Читает значение из шаблона по конфигурации read_value.
-    """
-    data, _ = open_workbook_and_sheet(template_path)
 
+    config = {
+        "key": "profit",
+        "label": "Прибыль отдела, мес, к зачету",
+        "row_name": "Прибыль отдела, мес, к зачету",
+        "row_column": 3,
+        "month_row": 2,
+        "month_offset": 0
+    }
+    """
+    wb, ws = open_workbook_and_sheet(template_path, data_only=True)
+
+    # Целевая колонка (текущий месяц при offset=0)
     target_month = get_target_month_name(month, config.get("month_offset", 0))
-    col_idx = find_month_column(data, target_month, config.get("month_row", 2))
+    col_idx = find_month_column(ws, target_month, config.get("month_row", 2))
     if col_idx is None:
+        wb.close()
         raise ValueError(
             f"Не найден месяц '{target_month}' в строке {config.get('month_row', 2)}"
         )
 
+    # Целевая строка
     row_num = find_row_by_name(
-        data, config.get("row_column", 3), config.get("row_name", "")
+        ws, config.get("row_column", 3), config.get("row_name", "")
     )
     if row_num is None:
+        wb.close()
         raise ValueError(
             f"Не найдена строка '{config.get('row_name')}' "
-            f"в колонке {config.get('row_column', 3)}"
+            f"в колонке {get_column_letter(config.get('row_column', 3))}"
         )
 
-    value = read_cell_at(data, row_num, col_idx)
+    # Чтение (с учётом объединённых ячеек)
+    value = read_cell_at(ws, row_num, col_idx)
+    wb.close()
 
-    col_letter = chr(64 + col_idx) if col_idx <= 26 else f"col{col_idx}"
-    cell_ref = f"{col_letter}{row_num}"
+    cell_ref = f"{get_column_letter(col_idx)}{row_num}"
     logger.info(f"Прочитано {config.get('key')}: {value} из {cell_ref}")
 
     return {

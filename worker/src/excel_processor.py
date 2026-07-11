@@ -1,77 +1,158 @@
-"""
-Обработка Excel: чтение структуры, запись данных в шаблон.
-
-Все операции записи — через LibreOffice UNO (lo_client).
-Чтение — через python-calamine.
-"""
 import os
 import shutil
 import logging
 import tempfile
-import re
+import subprocess
 import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 import msoffcrypto
+import re
 
 from src.vz_processing import preprocess_vzaimoraschety
-from src.lo_client import lo_client
-from src.template_reader import _open_sheet
 
 logger = logging.getLogger(__name__)
+
+# ========== ПЕРЕСЧЁТ ФОРМУЛ ==========
+
+
+async def _save_and_fix_formats(wb, output_path: str) -> None:
+    """
+    Сохраняет workbook через LibreOffice, чтобы не повредить форматы дат и формулы.
+
+    openpyxl при wb.save() может испортить форматы ячеек (особенно даты).
+    Поэтому: сохраняем openpyxl'ом во временный файл → конвертируем через
+    LibreOffice в правильный XLSX → заменяем оригинал.
+    """
+    tmp_dir = tempfile.mkdtemp()
+    tmp_file = os.path.join(tmp_dir, "temp_openpyxl.xlsx")
+    try:
+        # 1. Сохраняем openpyxl'ом во временный файл
+        wb.save(tmp_file)
+        wb.close()
+
+        # 2. Конвертируем через LibreOffice чтобы исправить форматы
+        result = subprocess.run(
+            [
+                "libreoffice", "--headless",
+                "--convert-to", "xlsx:Calc MS Excel 2007 XML",
+                "--outdir", tmp_dir, tmp_file
+            ],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"LibreOffice conversion failed: {result.stderr[:200]}")
+
+        # LibreOffice создаёт файл с тем же именем в --outdir
+        converted = os.path.join(tmp_dir, "temp_openpyxl.xlsx")
+        if not os.path.exists(converted):
+            raise RuntimeError("LibreOffice did not produce output file")
+
+        shutil.move(converted, output_path)
+        logger.info(f"File saved with format fix: {output_path}")
+
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+async def recalculate_excel(file_path: str) -> dict:
+    """
+    Пересчитывает все формулы в Excel-файле через LibreOffice headless.
+
+    Копирует файл во временную директорию, открывает в LibreOffice Calc,
+    сохраняет (формулы пересчитываются) и заменяет оригинал результатом.
+    """
+    if not os.path.exists(file_path):
+        return {"status": "error", "error_message": f"File not found: {file_path}"}
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        result = subprocess.run(
+            [
+                "libreoffice", "--headless",
+                "--convert-to", "xlsx:Calc MS Excel 2007 XML",
+                "--outdir", tmp_dir, file_path
+            ],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            logger.error(f"LibreOffice error: {result.stderr}")
+            return {
+                "status": "error",
+                "error_message": f"LibreOffice failed: {result.stderr[:200]}"
+            }
+
+        # LibreOffice создаёт копию файла во временной директории
+        result_file = os.path.join(tmp_dir, os.path.basename(file_path))
+        if not os.path.exists(result_file):
+            return {
+                "status": "error",
+                "error_message": "LibreOffice did not produce output file"
+            }
+
+        # Заменяем оригинал пересчитанной версией
+        shutil.move(result_file, file_path)
+        logger.info(f"Formulas recalculated: {file_path}")
+        return {"status": "success", "recalculated": True}
+
+    except subprocess.TimeoutExpired:
+        logger.error("LibreOffice recalculate timed out")
+        return {"status": "error", "error_message": "Recalculation timed out (30s)"}
+    finally:
+        # Очистка временной директории
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
-
 async def read_excel_structure(file_path: str) -> dict:
-    """Читает структуру листов Excel-файла."""
     try:
-        if not os.path.exists(file_path):
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'rb') as f:
+                    file = msoffcrypto.OfficeFile(f)
+                    if file.is_encrypted():
+                        try:
+                            file.load_key(password="987456")
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                                file.decrypt(tmp)
+                                tmp_path = tmp.name
+                            wb = load_workbook(tmp_path, data_only=True)
+                            os.unlink(tmp_path)
+                        except:
+                            return {"status": "error", "error_message": "Cannot decrypt file with default password"}
+                    else:
+                        wb = load_workbook(file_path, data_only=True)
+            except:
+                wb = load_workbook(file_path, data_only=True)
+        else:
             return {"status": "error", "error_message": "File not found"}
-
-        # Расшифровка если нужно
-        real_path = file_path
-        tmp = None
-        try:
-            with open(file_path, 'rb') as f:
-                office_file = msoffcrypto.OfficeFile(f)
-                if office_file.is_encrypted():
-                    office_file.load_key(password="987456")
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-                    office_file.decrypt(tmp)
-                    tmp.close()
-                    real_path = tmp.name
-        except Exception:
-            pass
-
-        try:
-            from python_calamine import CalamineWorkbook
-            wb = CalamineWorkbook.from_path(real_path)
-            sheets = {}
-            for name in wb.sheet_names:
-                data = wb.get_sheet_by_name(name).to_python()
-                headers = []
-                if len(data) > 1:
-                    headers = [str(h) for h in data[1] if h is not None]
-                sheets[name] = {
-                    "headers": headers,
-                    "rows_count": len(data),
-                    "max_column": len(data[0]) if data else 0,
-                    "header_row": 2
-                }
-            return {"status": "success", "result": {"sheets": sheets}}
-        finally:
-            if tmp and real_path != file_path:
-                try:
-                    os.unlink(real_path)
-                except Exception:
-                    pass
+        
+        sheets = {}
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            header_row = 2
+            headers = [cell.value for cell in ws[header_row] if cell.value]
+            sheets[sheet_name] = {
+                "headers": headers,
+                "rows_count": ws.max_row,
+                "max_column": ws.max_column,
+                "header_row": header_row
+            }
+        return {"status": "success", "result": {"sheets": sheets}}
     except Exception as e:
         logger.exception("read_excel_structure error")
         return {"status": "error", "error_message": str(e)}
 
-
 def clean_number(value):
-    """Очищает число от неразрывных пробелов и прочего мусора."""
     if isinstance(value, str):
         cleaned = re.sub(r'[^\d,.-]', '', value.replace('\u00a0', '').replace(' ', ''))
         cleaned = cleaned.replace(',', '.')
@@ -81,24 +162,15 @@ def clean_number(value):
             return value
     return value
 
+# ========== ФУНКЦИЯ ДЛЯ ВЗАИМОРАСЧЕТОВ ==========
+# Функция _preprocess_vzaimoraschety вынесена в src.vz_processing.preprocess_vzaimoraschety
+# для уменьшения размера модуля. Ниже — алиас для обратной совместимости.
 
-# Алиас для обратной совместимости
 _preprocess_vzaimoraschety = preprocess_vzaimoraschety
-
 
 # ========== ОСНОВНАЯ ФУНКЦИЯ ==========
 
-
-async def apply_sheet_mapping(
-    source_path: str,
-    template_path: str,
-    sheet_name: str,
-    mapping: dict,
-    month: str,
-    year: int,
-    password: str = "987456",
-    output_path: str = None
-) -> dict:
+async def apply_sheet_mapping(source_path: str, template_path: str, sheet_name: str, mapping: dict, month: str, year: int, password: str = "987456", output_path: str = None) -> dict:
     try:
         if output_path is None:
             output_dir = os.path.dirname(template_path)
@@ -106,7 +178,7 @@ async def apply_sheet_mapping(
             output_path = os.path.join(output_dir, output_filename)
             shutil.copy2(template_path, output_path)
             logger.info(f"Created new output file: {output_path}")
-
+            
             if password:
                 try:
                     with open(output_path, 'rb') as f:
@@ -126,7 +198,7 @@ async def apply_sheet_mapping(
             logger.info(f"Using existing output file: {output_path}")
 
         # ======== ЧТЕНИЕ И ОЧИСТКА ========
-        df_source = pd.read_excel(source_path, header=0, engine='calamine')
+        df_source = pd.read_excel(source_path, header=0)
         logger.info(f"Source rows before filters: {len(df_source)}")
 
         money_keywords = ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']
@@ -142,7 +214,7 @@ async def apply_sheet_mapping(
                 )
                 df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
 
-        # ======== ФИЛЬТРЫ ========
+        # ======== ФИЛЬТРЫ (включая списки) ========
         filters = mapping.get("filters", {})
         exclude_filters = mapping.get("exclude_filters", {})
 
@@ -151,18 +223,24 @@ async def apply_sheet_mapping(
                 if col in df_source.columns:
                     if isinstance(val, list):
                         df_source = df_source[~df_source[col].astype(str).isin([str(v) for v in val])]
+                        logger.info(f"Applied exclude filter {col} NOT IN {val}, rows left: {len(df_source)}")
                     else:
                         df_source = df_source[df_source[col].astype(str) != str(val)]
-                    logger.info(f"Applied exclude filter {col}, rows left: {len(df_source)}")
+                        logger.info(f"Applied exclude filter {col} != {val}, rows left: {len(df_source)}")
+                else:
+                    logger.warning(f"Exclude column '{col}' not found in source")
 
         if filters:
             for col, val in filters.items():
                 if col in df_source.columns:
                     if isinstance(val, list):
                         df_source = df_source[df_source[col].astype(str).isin([str(v) for v in val])]
+                        logger.info(f"Applied filter {col} IN {val}, rows left: {len(df_source)}")
                     else:
                         df_source = df_source[df_source[col].astype(str) == str(val)]
-                    logger.info(f"Applied filter {col}, rows left: {len(df_source)}")
+                        logger.info(f"Applied filter {col} = {val}, rows left: {len(df_source)}")
+                else:
+                    logger.warning(f"Filter column '{col}' not found in source")
 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after applying filters"}
@@ -171,7 +249,7 @@ async def apply_sheet_mapping(
         custom = mapping.get("custom_processing")
         if custom and custom.get("type") == "vzaimoraschety":
             office_mapping = custom.get("office_mapping", {})
-            df_source = preprocess_vzaimoraschety(df_source, custom, office_mapping)
+            df_source = _preprocess_vzaimoraschety(df_source, custom, office_mapping)
 
         if df_source.empty:
             return {"status": "error", "error_message": "No data after custom processing"}
@@ -182,9 +260,11 @@ async def apply_sheet_mapping(
             for col, allowed_values in view_filters.items():
                 if col in df_source.columns:
                     df_source = df_source[df_source[col].astype(str).isin([str(v) for v in allowed_values])]
-                    logger.info(f"Applied view filter {col}, rows left: {len(df_source)}")
+                    logger.info(f"Applied view filter {col} in {allowed_values}, rows left: {len(df_source)}")
+                else:
+                    logger.warning(f"View filter column '{col}' not found in source")
             if df_source.empty:
-                return {"status": "error", "error_message": "No data after view filters"}
+                return {"status": "error", "error_message": "No data after applying view filters"}
 
         # ======== ГРУППИРОВКА И АГРЕГАЦИЯ ========
         group_by = mapping.get("group_by")
@@ -202,14 +282,22 @@ async def apply_sheet_mapping(
                         result = {}
                         for col in group_by:
                             result[col] = group[col].iloc[0]
-                        result['Оклад'] = group.loc[group.get('ВидНачисленияЗП') == 'Оплата труда', 'Оклад'].sum() if 'Оклад' in df_source.columns else 0
-                        result['Премия'] = group['Премия'].sum() if 'Премия' in df_source.columns else 0
+                        if 'Оклад' in df_source.columns:
+                            ok_labor = group.loc[group['ВидНачисленияЗП'] == 'Оплата труда', 'Оклад'].sum()
+                            result['Оклад'] = ok_labor
+                        else:
+                            result['Оклад'] = 0
+                        if 'Премия' in df_source.columns:
+                            result['Премия'] = group['Премия'].sum()
+                        else:
+                            result['Премия'] = 0
                         if 'Комментарий' in df_source.columns:
-                            comments = group.loc[group.get('ВидНачисленияЗП') == 'Премия', 'Комментарий'].dropna().astype(str).unique()
+                            comments = group.loc[group['ВидНачисленияЗП'] == 'Премия', 'Комментарий'].dropna().astype(str).unique()
                             result['Комментарий'] = "; ".join(comments)
                         else:
                             result['Комментарий'] = ""
                         return pd.Series(result)
+
                     df_grouped = df_source.groupby(group_by, as_index=False).apply(group_agg).reset_index(drop=True)
                     data_for_insert = df_grouped.to_dict(orient='records')
                 else:
@@ -230,21 +318,27 @@ async def apply_sheet_mapping(
         else:
             data_for_insert = df_source.to_dict(orient='records')
 
-        # ======== ПОДГОТОВКА ДАННЫХ ДЛЯ ВСТАВКИ ========
+        # ======== ВСТАВКА В ШАБЛОН ========
+        wb = load_workbook(output_path)
+        if sheet_name not in wb.sheetnames:
+            return {"status": "error", "error_message": f"Sheet '{sheet_name}' not found in template"}
+        ws = wb[sheet_name]
+
+        header_row = mapping.get("header_row", 2)
         source_cols = mapping.get("source_columns", {})
         source_cols = {int(k): v for k, v in source_cols.items()}
+        append = mapping.get("append_to_end", True)
 
         rows_to_insert = []
         for row_dict in data_for_insert:
             new_row = {}
             for target_col_idx, source_expr in source_cols.items():
                 if source_expr == "{month} {year}":
-                    # Период всегда как текст — "Май 2026"
                     new_row[target_col_idx] = f"{month} {year}"
                 else:
                     if source_expr in row_dict:
                         val = row_dict[source_expr]
-                        if any(kw in source_expr for kw in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']) and source_expr != "СтавкаНДС":
+                        if any(keyword in source_expr for keyword in ['Оклад', 'Премия', 'Сумма', 'Ставка', 'НДС']) and source_expr != "СтавкаНДС":
                             val = clean_number(val)
                         new_row[target_col_idx] = val
                     else:
@@ -256,34 +350,36 @@ async def apply_sheet_mapping(
 
         logger.info(f"Prepared {len(rows_to_insert)} rows for insertion")
 
-        # ======== ВСТАВКА ЧЕРЕЗ LO_CLIENT ========
-        doc = await lo_client.open_document(output_path)
-        try:
-            ws = await lo_client.get_sheet(doc, sheet_name)
-            header_row = mapping.get("header_row", 2)
+        if append:
+            last_row = ws.max_row
+            while last_row > 0:
+                row_has_data = False
+                for col in range(1, ws.max_column + 1):
+                    if ws.cell(row=last_row, column=col).value is not None:
+                        row_has_data = True
+                        break
+                if row_has_data:
+                    break
+                last_row -= 1
+            start_row = last_row + 1
+            if start_row <= header_row:
+                start_row = header_row + 1
+        else:
+            if ws.max_row > header_row:
+                ws.delete_rows(header_row + 1, ws.max_row - header_row)
+            start_row = header_row + 1
 
-            # Конвертируем target_col_idx из 1-based в 0-based
-            rows_0based = []
-            for row_dict in rows_to_insert:
-                r = {}
-                for col_idx, value in row_dict.items():
-                    r[col_idx - 1] = value
-                rows_0based.append(r)
+        logger.info(f"Start row: {start_row}, number of rows to insert: {len(rows_to_insert)}")
 
-            # Находим последнюю строку и добавляем после неё
-            start_row = await lo_client.find_last_row(ws)
-            if start_row < header_row:
-                start_row = header_row
+        for i, row_dict in enumerate(rows_to_insert, start=start_row):
+            for col_idx, value in row_dict.items():
+                if value is not None:
+                    ws.cell(row=i, column=col_idx).value = value
 
-            await lo_client.append_rows(ws, rows_0based, start_row=start_row)
+        await _save_and_fix_formats(wb, output_path)
+        logger.info(f"File saved: {output_path}")
 
-            await lo_client.save_document(doc, output_path)
-            logger.info(f"File saved via LibreOffice: {output_path}")
-
-            return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
-        finally:
-            await lo_client.close_document(doc)
-
+        return {"status": "success", "output_path": output_path, "rows_added": len(rows_to_insert)}
     except Exception as e:
         logger.exception("apply_sheet_mapping error")
         return {"status": "error", "error_message": str(e)}

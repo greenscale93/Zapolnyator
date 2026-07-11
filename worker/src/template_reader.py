@@ -1,135 +1,138 @@
 """
-Чтение данных из шаблона Excel-отчёта (через python-calamine).
+Чтение данных из шаблона Excel-отчёта.
 
 Содержит:
 - get_template_offices — список офисов из шаблона
 - find_row_by_name — поиск строки по тексту в колонке
 - find_month_column — поиск колонки месяца в шапке
-- read_cell_at — чтение значения из ячейки
+- read_cell_at — чтение значения из ячейки (с учётом объединённых)
 """
 import logging
 import os
 import tempfile
-from typing import Optional, List
+import zipfile
+from typing import Optional
 
-from python_calamine import CalamineWorkbook
+import openpyxl
+from openpyxl.utils import get_column_letter
 import msoffcrypto
 
 logger = logging.getLogger(__name__)
 
 
-def _decrypt_if_needed(template_path: str, password: str = "987456") -> str:
-    """Расшифровывает файл если нужно, возвращает путь к расшифрованной копии."""
+def _open_workbook(template_path: str, data_only: bool = True):
+    """Открывает workbook с поддержкой зашифрованных файлов."""
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"Template file not found: {template_path}")
 
+    wb = None
     try:
-        with open(template_path, 'rb') as f:
-            office_file = msoffcrypto.OfficeFile(f)
-            if office_file.is_encrypted():
-                office_file.load_key(password=password)
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-                office_file.decrypt(tmp)
-                tmp.close()
-                logger.info(f"Decrypted: {tmp.name}")
-                return tmp.name
-    except Exception:
-        pass
-    return template_path
+        wb = openpyxl.load_workbook(template_path, data_only=data_only)
+    except zipfile.BadZipFile:
+        try:
+            with open(template_path, 'rb') as f:
+                file = msoffcrypto.OfficeFile(f)
+                if file.is_encrypted():
+                    file.load_key(password="987456")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                        file.decrypt(tmp)
+                        tmp_path = tmp.name
+                    wb = openpyxl.load_workbook(tmp_path, data_only=data_only)
+                    os.unlink(tmp_path)
+                else:
+                    raise
+        except Exception:
+            raise ValueError(
+                "Не удалось прочитать шаблон (возможно, повреждён или неверный пароль)"
+            )
+    if wb is None:
+        raise ValueError("Не удалось открыть файл шаблона")
+    return wb
 
 
-def _open_sheet(template_path: str, sheet_name: str) -> List[List]:
-    """Открывает лист и возвращает 2D-список данных (как to_python)."""
-    decrypted = _decrypt_if_needed(template_path)
-    try:
-        wb = CalamineWorkbook.from_path(decrypted)
-        names = wb.sheet_names
-        if sheet_name not in names:
-            raise ValueError(f"Лист '{sheet_name}' не найден. Доступны: {names}")
-        sheet = wb.get_sheet_by_name(sheet_name)
-        data = sheet.to_python()
-        return data
-    finally:
-        if decrypted != template_path and os.path.exists(decrypted):
-            try:
-                os.unlink(decrypted)
-            except Exception:
-                pass
+def get_sheet(ws_name: str = "Отчетность БИТ 2026"):
+    """Декоратор, открывающий workbook и передающий ws в функцию."""
+    # Эта функция используется внутри open_workbook_and_sheet
+    pass
 
 
-def open_workbook_and_sheet(
-    template_path: str,
-    sheet_name: str = "Отчетность БИТ 2026",
-    **kwargs
-):
-    """
-    Открывает лист и возвращает (data, sheet_name) где data — 2D-список.
-    Для обратной совместимости — вместо (wb, ws) теперь (data, name).
-    """
-    data = _open_sheet(template_path, sheet_name)
-    return data, sheet_name
+def open_workbook_and_sheet(template_path: str, sheet_name: str = "Отчетность БИТ 2026", data_only: bool = True):
+    """Открывает workbook и лист, возвращает (wb, ws)."""
+    wb = _open_workbook(template_path, data_only=data_only)
+    if sheet_name not in wb.sheetnames:
+        wb.close()
+        raise ValueError(f"Лист '{sheet_name}' не найден в шаблоне")
+    ws = wb[sheet_name]
+    return wb, ws
 
 
 def get_template_offices(template_path: str) -> list:
-    """Читает список офисов из шаблона."""
-    data = _open_sheet(template_path, "Отчетность БИТ 2026")
+    """
+    Читает шаблон Excel и возвращает отсортированный список названий
+    офисов/подразделений из листа 'Отчетность БИТ 2026'.
+    """
+    wb = _open_workbook(template_path, data_only=True)
+    if "Отчетность БИТ 2026" not in wb.sheetnames:
+        wb.close()
+        raise ValueError("Лист 'Отчетность БИТ 2026' не найден в шаблоне")
+
+    ws = wb["Отчетность БИТ 2026"]
     offices = set()
     for row in range(16, 33):
-        if row <= len(data) and len(data[row - 1]) > 2:
-            val = data[row - 1][2]  # 0-based: column 3
-            if val and str(val).strip():
-                offices.add(str(val).strip())
+        val = ws.cell(row=row, column=3).value
+        if val and str(val).strip():
+            offices.add(str(val).strip())
     for row in range(34, 36):
-        if row <= len(data) and len(data[row - 1]) > 2:
-            val = data[row - 1][2]
-            if val and str(val).strip():
-                offices.add(str(val).strip())
+        val = ws.cell(row=row, column=3).value
+        if val and str(val).strip():
+            offices.add(str(val).strip())
+    wb.close()
     return sorted(list(offices))
 
 
-def find_row_by_name(data, column: int, name: str) -> Optional[int]:
+def find_row_by_name(ws, column: int, name: str) -> Optional[int]:
     """
-    Находит номер строки (1-based) по тексту в колонке.
-    data — 2D-список из calamine to_python().
+    Находит номер строки, в которой в указанной колонке (1-based)
+    содержится искомый текст.
     """
-    col_idx = column - 1  # 1-based → 0-based
-    for row_idx, row in enumerate(data):
-        if col_idx < len(row) and row[col_idx] is not None:
-            if name.strip() in str(row[col_idx]).strip():
-                result = row_idx + 1
-                logger.info(f"Строка '{name}' найдена в {chr(64 + column) if column <= 26 else '?'}{result}")
-                return result
-    logger.warning(f"Строка '{name}' не найдена в колонке {column}")
+    for row in range(1, ws.max_row + 1):
+        cell_value = ws.cell(row=row, column=column).value
+        if cell_value and name.strip() in str(cell_value).strip():
+            logger.info(f"Строка '{name}' найдена в {get_column_letter(column)}{row}")
+            return row
+    logger.warning(f"Строка '{name}' не найдена в колонке {get_column_letter(column)}")
     return None
 
 
-def find_month_column(data, month_name: str, search_row: int = 2) -> Optional[int]:
+def find_month_column(ws, month_name: str, search_row: int = 2) -> Optional[int]:
     """
-    Находит номер колонки (1-based) по названию месяца в строке.
-    data — 2D-список из calamine to_python().
+    Находит номер колонки (1-based), в которой в указанной строке
+    содержится название месяца.
     """
-    if search_row > len(data):
-        logger.warning(f"Строка {search_row} вне данных (всего {len(data)} строк)")
-        return None
-
-    row_data = data[search_row - 1]
-    for col_idx, val in enumerate(row_data):
-        if val is not None and month_name.strip() in str(val).strip():
-            result = col_idx + 1
-            logger.info(f"Месяц '{month_name}' найден в колонке {result}")
-            return result
+    for col in range(1, ws.max_column + 1):
+        cell_value = ws.cell(row=search_row, column=col).value
+        if cell_value and month_name.strip() in str(cell_value).strip():
+            logger.info(f"Месяц '{month_name}' найден в {get_column_letter(col)}{search_row}")
+            return col
     logger.warning(f"Месяц '{month_name}' не найден в строке {search_row}")
     return None
 
 
-def read_cell_at(data, row: int, column: int):
+def read_cell_at(ws, row: int, column: int):
     """
-    Читает значение из ячейки (row, column — 1-based).
-    calamine автоматически заполняет объединённые ячейки значением
-    из верхней левой — дополнительная обработка не нужна.
+    Читает значение из ячейки. Если ячейка пустая, но входит
+    в объединённый диапазон — возвращает значение из верхней левой
+    ячейки объединения.
     """
-    r, c = row - 1, column - 1
-    if r < len(data) and c < len(data[r]):
-        return data[r][c]
-    return None
+    cell = ws.cell(row=row, column=column)
+    if cell.value is not None:
+        return cell.value
 
+    # Проверяем, не входит ли ячейка в объединённый диапазон
+    for merged_range in ws.merged_cells.ranges:
+        if (cell.coordinate in merged_range
+                or (merged_range.min_row <= row <= merged_range.max_row
+                    and merged_range.min_col <= column <= merged_range.max_col)):
+            top_left = ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+            return top_left.value
+    return None
