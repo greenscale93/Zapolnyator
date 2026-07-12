@@ -7,6 +7,7 @@
 """
 import logging
 import re
+import os
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -222,7 +223,6 @@ async def _write_admin_count(
         )
 
     # Открываем шаблон
-    import os
     try:
         wb = openpyxl.load_workbook(template_path)
     except Exception:
