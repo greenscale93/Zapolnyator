@@ -11,6 +11,7 @@ from src.excel_processor import read_excel_structure, apply_sheet_mapping, recal
 from src.vz_utils import get_empty_vz_contractors
 from src.template_reader import get_template_offices
 from src.ffot_writer import process_write_values, process_read_values
+from src.file_utils import restore_pivot_xml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -191,6 +192,20 @@ async def call_tool(request: ToolRequest):
                 return ToolResponse(status=result["status"], result=result, error_message=result.get("error_message"))
             except Exception as e:
                 logger.exception("recalculate_excel error")
+                return ToolResponse(status="error", error_message=str(e))
+
+        elif request.tool == "restore_pivot_xml":
+            original_template = request.arguments["original_template"]
+            output_path = request.arguments["output_path"]
+            if not os.path.exists(original_template):
+                return ToolResponse(status="error", error_message=f"Template not found: {original_template}")
+            if not os.path.exists(output_path):
+                return ToolResponse(status="error", error_message=f"Output not found: {output_path}")
+            try:
+                restore_pivot_xml(original_template, output_path)
+                return ToolResponse(status="success", result={"restored": True})
+            except Exception as e:
+                logger.exception("restore_pivot_xml error")
                 return ToolResponse(status="error", error_message=str(e))
                     
         else:

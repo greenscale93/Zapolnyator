@@ -143,6 +143,141 @@ async def _write_ffot(
     return {"value": ffot_value, "cell": cell_ref, "label": config.get("label", ""), "format": config.get("format", "amount")}
 
 
+async def _write_admin_count(
+    source_path: str,
+    template_path: str,
+    config: dict,
+    month,
+    year: int
+) -> dict:
+    """
+    Обрабатывает write_value типа 'admin_count':
+    - читает source, фильтрует НачислениеЗарплаты
+    - группирует по (Подразделение, Сотрудник), суммирует Оклад, Премия, АдминистративныеРасходы
+    - считает сотрудников с админ-расходами == threshold
+    - записывает значение в ячейку
+    """
+    threshold = config.get("admin_threshold", 0)
+    df = pd.read_excel(source_path, header=0)
+    logger.info(f"Admin count: загружено {len(df)} строк")
+
+    # Найти колонки
+    def _find_col(df, keywords):
+        for col in df.columns:
+            c = col.lower().strip()
+            if any(k in c for k in keywords):
+                return col
+        return None
+
+    type_col = _find_col(df, ["типзаписи", "тип записи", "recordtype"])
+    emp_col = _find_col(df, ["сотрудник", "employee", "фио"])
+    dept_col = _find_col(df, ["подразделение", "department"])
+    oklad_col = _find_col(df, ["оклад", "salary"])
+    premia_col = _find_col(df, ["премия", "bonus"])
+    admin_col = _find_col(df, ["административныерасходы", "administrative"])
+    payroll_col = _find_col(df, ["видначислениязп", "payrolltype"])
+
+    if not type_col:
+        raise ValueError("Не найдена колонка ТипЗаписи")
+    if not emp_col:
+        raise ValueError("Не найдена колонка Сотрудник")
+    if not admin_col:
+        raise ValueError("Не найдена колонка АдминистративныеРасходы")
+
+    # Фильтр: НачислениеЗарплаты
+    df_payroll = df[df[type_col].astype(str).str.strip() == "НачислениеЗарплаты"]
+    if df_payroll.empty:
+        logger.warning("Нет строк с ТипЗаписи='НачислениеЗарплаты'")
+        count = 0
+    else:
+        # Группировка: (Подразделение, Сотрудник), суммы
+        group_keys = []
+        if dept_col:
+            group_keys.append(dept_col)
+        if emp_col:
+            group_keys.append(emp_col)
+
+        if not group_keys:
+            raise ValueError("Нет колонок для группировки")
+
+        agg_funcs = {}
+        if oklad_col and oklad_col in df_payroll.columns:
+            agg_funcs[oklad_col] = "sum"
+        if premia_col and premia_col in df_payroll.columns:
+            agg_funcs[premia_col] = "sum"
+        if admin_col and admin_col in df_payroll.columns:
+            agg_funcs[admin_col] = "sum"
+
+        df_grouped = df_payroll.groupby(group_keys, as_index=False).agg(agg_funcs)
+
+        # Подсчёт: admin == threshold
+        if threshold == 0:
+            mask = (df_grouped[admin_col].isna()) | (df_grouped[admin_col] == 0)
+        else:
+            mask = df_grouped[admin_col] == threshold
+        count = int(mask.sum())
+        logger.info(
+            f"Admin count threshold={threshold}: {count} сотрудников "
+            f"(всего {len(df_grouped)} уникальных)"
+        )
+
+    # Открываем шаблон
+    import os
+    try:
+        wb = openpyxl.load_workbook(template_path)
+    except Exception:
+        import tempfile
+        import msoffcrypto
+        with open(template_path, 'rb') as f:
+            file = msoffcrypto.OfficeFile(f)
+            if file.is_encrypted():
+                file.load_key(password="987456")
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                    file.decrypt(tmp)
+                    tmp_path = tmp.name
+                wb = openpyxl.load_workbook(tmp_path)
+                os.unlink(tmp_path)
+            else:
+                raise
+
+    ws = wb["Отчетность БИТ 2026"]
+
+    # Целевая колонка (текущий месяц, offset=0)
+    target_month = get_target_month_name(month, config.get("month_offset", 0))
+    col_idx = find_month_column(ws, target_month, config.get("month_row", 2))
+    if col_idx is None:
+        wb.close()
+        raise ValueError(
+            f"Не найден месяц '{target_month}' в строке {config.get('month_row', 2)}"
+        )
+
+    # Целевая строка
+    row_num = find_row_by_name(
+        ws, config.get("row_column", 3), config.get("row_name", "")
+    )
+    if row_num is None:
+        wb.close()
+        raise ValueError(
+            f"Не найдена строка '{config.get('row_name')}' "
+            f"в колонке {get_column_letter(config.get('row_column', 3))}"
+        )
+
+    # Запись
+    cell_ref = f"{get_column_letter(col_idx)}{row_num}"
+    ws.cell(row=row_num, column=col_idx).value = count
+
+    from src.excel_processor import _save_and_fix_formats
+    await _save_and_fix_formats(wb, template_path)
+
+    logger.info(f"Записано {config.get('key')}: {count} в {cell_ref}")
+    return {
+        "value": count,
+        "cell": cell_ref,
+        "label": config.get("label", ""),
+        "format": config.get("format", "integer")
+    }
+
+
 def _calculate_ffot_sum(
     source_path: str,
     exclude_employee: Optional[dict] = None
@@ -282,6 +417,11 @@ async def process_write_values(
         try:
             if cfg.get("type") == "ffot":
                 result = await _write_ffot(
+                    source_path, template_path, cfg, month, year
+                )
+                results.append(result)
+            elif cfg.get("type") == "admin_count":
+                result = await _write_admin_count(
                     source_path, template_path, cfg, month, year
                 )
                 results.append(result)

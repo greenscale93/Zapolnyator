@@ -239,6 +239,14 @@ class OrchestratorAgent:
                     f"⚠️ Ошибка записи значений: {str(e)}", user_id=user_id
                 )
 
+        # ---- Восстановление pivot-таблиц из оригинала (openpyxl их разрушает) ----
+        if output_path:
+            try:
+                await self.worker_client.restore_pivot_xml(excel_path, output_path)
+                logger.info(f"Pivot tables restored in: {output_path}")
+            except Exception as e:
+                logger.warning(f"Pivot restore failed (non-critical): {e}")
+
         # ---- Пересчёт формул в Excel (LibreOffice) ----
         if output_path:
             try:

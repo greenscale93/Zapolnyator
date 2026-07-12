@@ -125,6 +125,28 @@
       "exclude_employee": {
         "Сорокин Илья Вячеславович": ["Премия"]
       }
+    },
+    {
+      "key": "admin_half",
+      "type": "admin_count",
+      "label": "Кол-во сотрудников с 50% админ затратами",
+      "row_name": "Кол-во сотрудников с 50% админ затратами",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0,
+      "format": "integer",
+      "admin_threshold": 20000
+    },
+    {
+      "key": "admin_zero",
+      "type": "admin_count",
+      "label": "Кол-во сотрудников без админ затрат",
+      "row_name": "Кол-во сотрудников без админ затрат",
+      "row_column": 3,
+      "month_row": 2,
+      "month_offset": 0,
+      "format": "integer",
+      "admin_threshold": 0
     }
   ],
   "read_values": [

@@ -77,3 +77,12 @@ class WorkerClient:
         if resp.get("status") == "success":
             return resp["result"]
         raise Exception(resp.get("error_message", "Recalculation failed"))
+
+    async def restore_pivot_xml(self, original_template: str, output_path: str) -> dict:
+        resp = await self.call_tool("restore_pivot_xml", {
+            "original_template": original_template,
+            "output_path": output_path
+        })
+        if resp.get("status") == "success":
+            return resp["result"]
+        raise Exception(resp.get("error_message", "Pivot restore failed"))
