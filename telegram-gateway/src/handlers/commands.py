@@ -36,15 +36,7 @@ async def cmd_start(message: Message, state: FSMContext):
                 "Отправьте файлы вручную."
             )
     else:
-        await message.answer(
-            "Привет! Отправьте два файла или используйте команды:\n"
-            "/start - начать работу\n"
-            "/reset - сбросить состояние\n"
-            "/autotest - вкл/выкл автотест\n"
-            "/diagnostic - вкл/выкл режим диагностики\n"
-            "/stop - остановить задачу\n"
-            "/edit_mapping - редактировать маппинг офисов"
-        )
+        await message.answer("Привет! Отправьте два файла или используйте команды.")
 
 
 @router.message(Command("reset"))

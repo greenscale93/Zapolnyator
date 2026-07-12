@@ -220,27 +220,16 @@ class OrchestratorAgent:
                 )
                 diagnostic = await self.session_manager.get_diagnostic_status(user_id)
                 for wr in write_results:
-                    key = wr.get("key", "")
                     if "error" in wr:
                         await self.notifier.send_message(
-                            f"⚠️ {wr.get('label', key)}: ошибка {wr['error']}",
+                            f"⚠️ {wr.get('label', wr.get('key', '?'))}: ошибка {wr['error']}",
                             user_id=user_id
                         )
-                    elif key in ("admin_half", "admin_zero"):
-                        label_map = {
-                            "admin_half": "Сотрудников с 50% админ.затрат",
-                            "admin_zero": "Сотрудников без админ затрат",
-                        }
-                        val = wr.get('value', 0)
-                        msg = f"📊 {label_map.get(key, wr.get('label', key))}: {val}"
-                        if diagnostic:
-                            msg += f" ({wr.get('cell', '?')})"
-                        await self.notifier.send_message(msg, user_id=user_id)
                     else:
                         val = wr.get('value', 0)
                         fmt = wr.get('format', 'amount')
                         val_str = _format_value(val, fmt)
-                        msg = f"📊 {wr.get('label', key)}: {val_str}"
+                        msg = f"📊 {wr.get('label', wr.get('key', '?'))}: {val_str}"
                         if diagnostic:
                             msg += f" ({wr.get('cell', '?')})"
                         await self.notifier.send_message(msg, user_id=user_id)
