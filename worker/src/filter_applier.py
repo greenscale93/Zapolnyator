@@ -15,8 +15,6 @@ import logging
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from src.excel_processor import _save_and_fix_formats
-
 logger = logging.getLogger(__name__)
 
 # Возможные названия колонки с периодом на разных листах
@@ -115,10 +113,15 @@ async def apply_period_filter(
             "error_message": f"No sheets were filtered: {'; '.join(errors)}"
         }
 
-    # ======== Шаг 2: Сохраняем через LibreOffice ========
+    # ======== Шаг 2: Сохраняем напрямую через openpyxl ========
+    # Не используем _save_and_fix_formats (LibreOffice), т.к. он сбрасывает auto_filter.
+    # К этому моменту файл уже обработан LO предыдущими шагами (apply_sheet_mapping,
+    # process_write_values), поэтому форматы в порядке.
     try:
         wb2 = load_workbook(file_path)
-        await _save_and_fix_formats(wb2, file_path)
+        wb2.save(file_path)
+        wb2.close()
+        logger.info(f"Filtered file saved: {file_path}")
     except Exception as e:
         logger.exception("Failed to save filtered file")
         return {
