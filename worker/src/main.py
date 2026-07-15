@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from src.mxl_parser import parse_mxl, convert_mxl_to_csv
 from src.excel_processor import read_excel_structure, apply_sheet_mapping, recalculate_excel
+from src.filter_applier import apply_period_filter
 from src.vz_utils import get_empty_vz_contractors
 from src.template_reader import get_template_offices
 from src.ffot_writer import process_write_values, process_read_values
@@ -192,7 +193,23 @@ async def call_tool(request: ToolRequest):
             except Exception as e:
                 logger.exception("recalculate_excel error")
                 return ToolResponse(status="error", error_message=str(e))
-                    
+
+        elif request.tool == "apply_period_filter":
+            file_path = request.arguments["file_path"]
+            sheets = request.arguments["sheets"]
+            month = request.arguments["month"]
+            year = request.arguments["year"]
+            try:
+                result = await apply_period_filter(file_path, sheets, month, year)
+                return ToolResponse(
+                    status=result["status"],
+                    result=result.get("result"),
+                    error_message=result.get("error_message")
+                )
+            except Exception as e:
+                logger.exception("apply_period_filter error")
+                return ToolResponse(status="error", error_message=str(e))
+
         else:
             return ToolResponse(status="error", error_message=f"Unknown tool: {request.tool}")
     

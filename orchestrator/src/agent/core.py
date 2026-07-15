@@ -215,6 +215,33 @@ class OrchestratorAgent:
                 task_id, {"output_path": output_path}
             )
 
+        # ---- Установка фильтра по периоду на листах-источниках ----
+        if output_path:
+            filter_sheets = ["Реализация", "ДС", "ФОТ", "Взаиморасчеты"]
+            try:
+                filter_result = await self.worker_client.apply_period_filter(
+                    file_path=output_path,
+                    sheets=filter_sheets,
+                    month=month,
+                    year=year
+                )
+                filtered = filter_result.get("filtered_sheets", [])
+                if filtered:
+                    await self.notifier.send_message(
+                        f"🔽 Установлен фильтр по периоду «{month} {year}» "
+                        f"на листах: {', '.join(filtered)}.",
+                        user_id=user_id
+                    )
+                warnings = filter_result.get("warnings") or filter_result.get("error")
+                if warnings:
+                    if isinstance(warnings, list):
+                        for w in warnings:
+                            logger.warning(f"Filter warning: {w}")
+                    else:
+                        logger.warning(f"Filter warning: {warnings}")
+            except Exception as e:
+                logger.warning(f"Period filter failed (non-critical): {e}")
+
         # ---- Write Values (из rules.json) ----
         write_values = self.rules.get("write_values", [])
         if output_path and write_values:

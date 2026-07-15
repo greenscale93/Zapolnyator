@@ -77,3 +77,22 @@ class WorkerClient:
         if resp.get("status") == "success":
             return resp["result"]
         raise Exception(resp.get("error_message", "Recalculation failed"))
+
+    async def apply_period_filter(
+        self, file_path: str, sheets: list[str], month: str, year: int
+    ) -> dict:
+        """
+        Устанавливает фильтр по периоду на указанных листах.
+
+        Вызывает apply_period_filter на worker-сервисе.
+        """
+        resp = await self.call_tool("apply_period_filter", {
+            "file_path": file_path,
+            "sheets": sheets,
+            "month": month,
+            "year": year
+        })
+        if resp.get("status") == "success":
+            return resp["result"]
+        logger.warning(f"Period filter failed: {resp.get('error_message')}")
+        return {"filtered_sheets": [], "error": resp.get("error_message")}
