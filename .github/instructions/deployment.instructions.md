@@ -17,10 +17,10 @@ git push origin main
 ```
 
 ### Шаг 2. Отследить GitHub Actions
-Опрашивать **только** статус workflow run для последнего коммита:
-- Ждать `status=completed` и `conclusion=success`
-- Использовать `https://api.github.com/repos/greenscale93/Zapolnyator/actions/runs?event=push&per_page=1`
-- Не читать логи Actions, не скачивать content.txt, не делать лишних запросов
+Проверить **минимальным запросом** — только статус последнего workflow run:
+- Запросить `https://api.github.com/repos/greenscale93/Zapolnyator/actions/runs?event=push&per_page=1`
+- Проверить 2 поля: `status=completed` и `conclusion=success`
+- Не читать логи, не скачивать файлы, не делать повторных запросов в цикле
 - Если `conclusion=failure` — сообщить пользователю и остановиться
 
 ### Шаг 3. Проверить контейнеры на VPS
