@@ -71,6 +71,12 @@ async def toggle_diagnostic(user_id: int):
     await session_manager.set_diagnostic_status(user_id, new_status)
     return {"enabled": new_status}
 
+@router.get("/api/v1/mapping/stats/{user_id}")
+async def mapping_stats(user_id: int):
+    """Возвращает статистику сохранённых маппингов."""
+    await agent.mapping_stats_command(user_id)
+    return {"status": "ok"}
+
 @router.post("/api/v1/edit_mapping")
 async def edit_mapping(request: EditMappingRequest):
     await agent.edit_mapping_command(request.user_id)

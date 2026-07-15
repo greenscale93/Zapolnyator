@@ -85,3 +85,8 @@ class OrchestratorClient:
         url = f"{self.base_url}/api/v1/delete_mapping"
         payload = {"task_id": task_id, "contractor": contractor}
         return await self._request_with_retry("POST", url, json=payload)
+
+    async def get_mapping_stats(self, user_id: int):
+        """Запрашивает статистику сохранённых маппингов."""
+        url = f"{self.base_url}/api/v1/mapping/stats/{user_id}"
+        return await self._request_with_retry("GET", url)

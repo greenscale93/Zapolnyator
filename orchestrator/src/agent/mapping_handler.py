@@ -10,7 +10,9 @@
 import logging
 from typing import List, Callable, Optional
 
-from src.mapping_store import get_mapping_dict, set_mapping, get_all_mappings, delete_mapping
+from src.mapping_store import (
+    get_mapping_dict, set_mapping, get_all_mappings, delete_mapping, get_mapping_count
+)
 from src.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
@@ -147,12 +149,30 @@ class MappingHandler:
             reply_markup=reply_markup
         )
 
+    async def show_mapping_stats(self, user_id: int):
+        """Показывает статистику сохранённых маппингов."""
+        count = get_mapping_count()
+        if count == 0:
+            await self.notifier.send_message(
+                "📭 Нет сохранённых маппингов. Они будут созданы при первой "
+                "обработке взаиморасчетов с новыми контрагентами.",
+                user_id=user_id
+            )
+        else:
+            await self.notifier.send_message(
+                f"💾 Сохранено маппингов: {count}\n"
+                f"Они используются при обработке взаиморасчетов — "
+                f"контрагенты с известными маппингами пропускаются автоматически.\n\n"
+                f"Чтобы посмотреть/удалить маппинги, отправьте /edit_mapping",
+                user_id=user_id
+            )
+
     async def delete_mapping(self, task_id: str, contractor: str, session_manager):
         """Удаляет маппинг для контрагента."""
         delete_mapping(contractor)
         state = await session_manager.get_session(task_id)
         if state:
             await self.notifier.send_message(
-                f"Маппинг для {contractor} удалён.",
+                f"🗑 Маппинг для «{contractor}» удалён.",
                 user_id=state["user_id"]
             )

@@ -93,3 +93,11 @@ async def cmd_edit_mapping(message: Message):
     client = OrchestratorClient()
     await client.edit_mapping(message.from_user.id)
     await message.answer("Запрошено редактирование маппинга.")
+
+
+@router.message(Command("mapping_stats"))
+async def cmd_mapping_stats(message: Message):
+    """Показывает статистику сохранённых маппингов."""
+    client = OrchestratorClient()
+    await client.get_mapping_stats(message.from_user.id)
+    await message.answer("📊 Запрошена статистика маппингов.")

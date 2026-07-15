@@ -8,12 +8,17 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
-    def __init__(self, db_path: str = "/app/data/rules.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        # По умолчанию используем тот же путь, что и mapping_store
+        self.db_path = db_path or os.getenv(
+            "DATABASE_URL", "sqlite:///app/data/rules.db"
+        ).replace("sqlite:///", "")
         self._init_db()
 
     def _init_db(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute('''
@@ -125,6 +130,10 @@ class MemoryStore:
         finally:
             conn.close()
 
+    def get_db_path(self) -> str:
+        """Возвращает путь к файлу БД."""
+        return self.db_path
+
     async def load_all_rules(self) -> Dict[str, Any]:
         """
         Загружает все правила из БД.
@@ -152,6 +161,10 @@ class MemoryStore:
                     "SELECT * FROM vat_exceptions"
                 ).fetchall()
             ]
+            logger.info(
+                f"Loaded rules: {len(subdivisions)} subdivisions, "
+                f"{len(employees)} employees, {len(vat)} VAT"
+            )
             return {
                 "subdivision_rules": subdivisions,
                 "employee_exceptions": employees,

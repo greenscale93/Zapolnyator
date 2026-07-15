@@ -5,7 +5,7 @@ import asyncio
 from src.session_manager import SessionManager
 from src.memory import MemoryStore
 from src.worker_client import WorkerClient
-from src.mapping_store import get_mapping_dict
+from src.mapping_store import get_mapping_dict, get_mapping_count
 from src.telegram_notifier import TelegramNotifier
 from src.agent.mapping_handler import MappingHandler
 
@@ -122,6 +122,14 @@ class OrchestratorAgent:
             vz_mapping = sheets_mapping["Взаиморасчеты"]
             await self.notifier.send_message(
                 "📝 Заполняю лист: Взаиморасчеты...", user_id=user_id
+            )
+
+            # Показываем, сколько маппингов уже сохранено
+            saved_count = get_mapping_count()
+            await self.notifier.send_message(
+                f"💾 Сохранённых маппингов: {saved_count}. "
+                f"Известные контрагенты будут пропущены автоматически.",
+                user_id=user_id
             )
 
             try:
@@ -310,6 +318,10 @@ class OrchestratorAgent:
 
     async def edit_mapping_command(self, user_id: int):
         await self.mapping_handler.show_mappings(user_id)
+
+    async def mapping_stats_command(self, user_id: int):
+        """Показывает статистику сохранённых маппингов."""
+        await self.mapping_handler.show_mapping_stats(user_id)
 
     async def handle_delete_mapping(self, task_id: str, contractor: str):
         await self.mapping_handler.delete_mapping(
