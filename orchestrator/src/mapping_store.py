@@ -5,7 +5,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///app/data/rules.db")
-DB_PATH = DATABASE_URL.replace("sqlite:///", "")
+# Убираем sqlite:// (оставляем /app/data/rules.db — абсолютный путь)
+DB_PATH = DATABASE_URL.replace("sqlite://", "")
 
 
 def _get_conn() -> sqlite3.Connection:

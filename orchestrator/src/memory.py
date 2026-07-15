@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class MemoryStore:
     def __init__(self, db_path: str | None = None):
         # По умолчанию используем тот же путь, что и mapping_store
+        # Убираем sqlite:// (оставляем /app/data/rules.db — абсолютный путь)
         self.db_path = db_path or os.getenv(
             "DATABASE_URL", "sqlite:///app/data/rules.db"
-        ).replace("sqlite:///", "")
+        ).replace("sqlite://", "")
         self._init_db()
 
     def _init_db(self):
