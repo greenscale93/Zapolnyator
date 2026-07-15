@@ -105,29 +105,28 @@ async def apply_period_filter(
         )
         filtered_sheets.append(sheet_name)
 
-    wb.close()
-
     if not filtered_sheets:
+        wb.close()
         return {
             "status": "error",
             "error_message": f"No sheets were filtered: {'; '.join(errors)}"
         }
 
-    # ======== Шаг 2: Сохраняем напрямую через openpyxl ========
+    # ======== Шаг 2: Сохраняем через openpyxl ========
     # Не используем _save_and_fix_formats (LibreOffice), т.к. он сбрасывает auto_filter.
-    # К этому моменту файл уже обработан LO предыдущими шагами (apply_sheet_mapping,
-    # process_write_values), поэтому форматы в порядке.
+    # К этому моменту файл уже обработан LO предыдущими шагами, форматы в порядке.
     try:
-        wb2 = load_workbook(file_path)
-        wb2.save(file_path)
-        wb2.close()
+        wb.save(file_path)
         logger.info(f"Filtered file saved: {file_path}")
     except Exception as e:
+        wb.close()
         logger.exception("Failed to save filtered file")
         return {
             "status": "error",
             "error_message": f"Save failed: {str(e)}"
         }
+
+    wb.close()
 
     result: dict = {
         "filtered_sheets": filtered_sheets,
